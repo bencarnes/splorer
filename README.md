@@ -10,9 +10,9 @@ case-insensitively, followed by files in the same order. Each row shows the
 entry name, size (or "dir"), and last-modified date.
 
 A menu bar at the top of the screen provides access to application features.
-Currently it contains a single **Openers** menu that lets you configure which
-program is used to open files of a given extension, overriding the system
-default (`xdg-open`).
+It contains a **Find** menu for searching files by name and an **Openers** menu
+for configuring which program opens files of a given extension (overriding the
+system default, `xdg-open`).
 
 ### Controls
 
@@ -35,8 +35,34 @@ default (`xdg-open`).
 
 | Input | Action |
 |---|---|
+| `Ctrl+F` | Open the Find / search view |
+| `Alt+F` | Open the Find / search view via the menu |
 | `Alt+O` | Open the Openers dialog |
 | Click on a menu label | Open that menu's dialog |
+
+**Find / search view**
+
+| Input | Action |
+|---|---|
+| Typing | Update the search pattern |
+| `Enter` | Start the search |
+| `←` / `→` | Move cursor within the pattern field |
+| `↑` / `k` | Move cursor up in results |
+| `↓` / `j` | Move cursor down in results |
+| `PgUp` / `PgDn` | Scroll results one page |
+| `Enter` / `→` / `l` | Open file or navigate into directory |
+| Single click | Move cursor to result row |
+| Double-click | Open file or navigate into directory |
+| Scroll wheel | Move cursor up / down in results |
+| `Esc` | Cancel a running search, or close the search view |
+| `Backspace` | Delete a character (input phase); close the search view (results phase) |
+
+While a search is running a progress counter is shown. The search is recursive:
+it looks inside the directory currently shown in the file tree and all
+sub-directories. Patterns follow `filepath.Match` syntax — both exact names
+(`main.go`) and wildcards (`*.go`, `foo*`) are supported. Results are sorted by
+their full path. Relative paths (relative to the directory being searched) are
+displayed in the results list.
 
 **Openers dialog**
 
@@ -114,7 +140,7 @@ splorer/
     ├── app/
     │   └── app.go                Root tea.Model. Owns all sub-components, routes
     │                             messages, handles menu bar activation, dispatches
-    │                             file-open events using the associations map.
+    │                             file-open and directory-navigate events.
     ├── associations/
     │   ├── store.go              Load() / Save() — reads and writes
     │   │                         ~/.config/splorer/openers.json.
@@ -134,10 +160,17 @@ splorer/
     │   │                         keyboard hotkey or mouse click. Designed to accept
     │   │                         additional items and future dropdown sub-menus.
     │   └── menubar_test.go
-    └── opener/
-        ├── opener.go             OpenFile() (xdg-open) and OpenFileWith(path, prog).
-        ├── opener_test.go
-        └── opener_integration_test.go   (build tag: integration)
+    ├── opener/
+    │   ├── opener.go             OpenFile() (xdg-open) and OpenFileWith(path, prog).
+    │   ├── opener_test.go
+    │   └── opener_integration_test.go   (build tag: integration)
+    └── search/
+        ├── model.go              Find / search view: text-input phase, background
+        │                         recursive walk (filepath.WalkDir + context
+        │                         cancellation), streaming result batches via channel,
+        │                         sorted results list, keyboard/mouse navigation.
+        │                         Emits OpenFileMsg (files) and NavigateDirMsg (dirs).
+        └── model_test.go
 ```
 
 ## Key design decisions
@@ -167,10 +200,26 @@ splorer/
   before forwarding it to the filetree. The filetree therefore always sees Y=0 as
   its own top row, and its `headerHeight` constant remains accurate.
 
-- **The Openers dialog is a full-screen overlay.**  
-  When `dialogOpen == true`, `app.Update` routes all events to `dialog.Update`
-  exclusively, and `app.View()` renders the dialog content in place of the
+- **The Find view and Openers dialog are full-screen overlays.**  
+  When `searchOpen` or `dialogOpen` is `true`, `app.Update` routes all events
+  to that component exclusively, and `app.View()` renders it in place of the
   filetree. The menu bar is always rendered above the active content.
+
+- **Search runs in a background goroutine with context cancellation.**  
+  `search.startSearch` launches a `filepath.WalkDir` goroutine and returns a
+  `waitForBatch` command that blocks on a channel. Each batch of up to 100
+  results is sent to the Tea event loop, which appends them to the model and
+  issues the next `waitForBatch`. Pressing `Esc` or `Backspace` calls the
+  context cancel function; `defer close(ch)` in the goroutine unblocks any
+  pending `waitForBatch`. Stale messages are discarded via a per-search session
+  ID so opening a new search while the previous goroutine is still winding down
+  is safe.
+
+- **File vs. directory activation from search results.**  
+  Selecting a file emits `filetree.OpenFileMsg` (keeping the search view open
+  so the user can continue browsing). Selecting a directory emits
+  `search.NavigateDirMsg`; `app.Update` navigates the underlying file tree to
+  that path and closes the search view.
 
 - **Associations are saved on every dialog close.**  
   `app.Update` calls `associations.Save` each time the dialog is dismissed.

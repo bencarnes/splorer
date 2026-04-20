@@ -44,6 +44,15 @@ func New(cwd string) Model {
 	return m
 }
 
+// CWD returns the directory the model is currently showing.
+func (m Model) CWD() string { return m.cwd }
+
+// NavigateTo navigates the model to path, returning the updated model. Returns
+// an error if the directory cannot be read; in that case the model is unchanged.
+func (m Model) NavigateTo(path string) (Model, error) {
+	return m.navigateTo(path)
+}
+
 // navigateTo loads the directory at path into the model. On error the error
 // message is stored and the model is returned unchanged.
 func (m Model) navigateTo(path string) (Model, error) {
