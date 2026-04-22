@@ -33,7 +33,7 @@ func TestLoadDir_SortOrder(t *testing.T) {
 		[]string{"zoo.txt", "Apple.go", "mango.md"},
 	)
 
-	entries, err := loadDir(root)
+	entries, err := loadDir(root, SortByName)
 	if err != nil {
 		t.Fatalf("loadDir error: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestLoadDir_SortOrder(t *testing.T) {
 
 func TestLoadDir_Empty(t *testing.T) {
 	root := setupTempDir(t, nil, nil)
-	entries, err := loadDir(root)
+	entries, err := loadDir(root, SortByName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,10 +88,157 @@ func TestLoadDir_PermissionDenied(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(restricted, 0755) }) //nolint:errcheck
 
-	_, err := loadDir(restricted)
+	_, err := loadDir(restricted, SortByName)
 	if err == nil {
 		t.Error("expected error for unreadable directory, got nil")
 	}
+}
+
+// ── Sort order ───────────────────────────────────────────────────────────────
+
+func TestLoadDir_SortByTime(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt"})
+
+	// Give each file a distinct mtime so the order is deterministic.
+	base := int64(1_000_000)
+	for i, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		ts := base + int64(i)*1000
+		if err := os.Chtimes(filepath.Join(root, name),
+			timeFromUnix(ts), timeFromUnix(ts)); err != nil {
+			t.Fatalf("chtimes %s: %v", name, err)
+		}
+	}
+
+	entries, err := loadDir(root, SortByTime)
+	if err != nil {
+		t.Fatalf("loadDir: %v", err)
+	}
+
+	// Newest first: c.txt, b.txt, a.txt
+	want := []string{"c.txt", "b.txt", "a.txt"}
+	names := fileNames(entries)
+	for i, w := range want {
+		if i >= len(names) || names[i] != w {
+			t.Errorf("SortByTime[%d] = %q, want %q (all: %v)", i, names[i], w, names)
+		}
+	}
+}
+
+func TestLoadDir_SortBySize(t *testing.T) {
+	root := t.TempDir()
+	// Write files with known sizes: big=100 bytes, mid=50 bytes, small=10 bytes.
+	for name, size := range map[string]int{"big.txt": 100, "mid.txt": 50, "small.txt": 10} {
+		if err := os.WriteFile(filepath.Join(root, name),
+			make([]byte, size), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	entries, err := loadDir(root, SortBySize)
+	if err != nil {
+		t.Fatalf("loadDir: %v", err)
+	}
+
+	// Largest first.
+	want := []string{"big.txt", "mid.txt", "small.txt"}
+	names := fileNames(entries)
+	for i, w := range want {
+		if i >= len(names) || names[i] != w {
+			t.Errorf("SortBySize[%d] = %q, want %q (all: %v)", i, names[i], w, names)
+		}
+	}
+}
+
+func TestLoadDir_SortByType(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"b.go", "a.go", "z.txt", "m.txt", "noext"})
+
+	entries, err := loadDir(root, SortByType)
+	if err != nil {
+		t.Fatalf("loadDir: %v", err)
+	}
+
+	// .go files first (alphabetically), then .txt, then no-extension last.
+	want := []string{"a.go", "b.go", "m.txt", "z.txt", "noext"}
+	names := fileNames(entries)
+	for i, w := range want {
+		if i >= len(names) || names[i] != w {
+			t.Errorf("SortByType[%d] = %q, want %q (all: %v)", i, names[i], w, names)
+		}
+	}
+}
+
+func TestLoadDir_DirsAlwaysFirst(t *testing.T) {
+	root := setupTempDir(t, []string{"zdir"}, []string{"a.txt"})
+
+	for _, so := range AllSortOrders {
+		entries, err := loadDir(root, so)
+		if err != nil {
+			t.Fatalf("loadDir(%v): %v", so, err)
+		}
+		if len(entries) < 2 {
+			t.Fatalf("expected at least 2 entries")
+		}
+		if !entries[0].IsDir {
+			t.Errorf("SortOrder=%v: first entry should be a directory, got %q", so, entries[0].Name)
+		}
+	}
+}
+
+func TestSetSortOrder_ResortsCurrent(t *testing.T) {
+	root := t.TempDir()
+	for name, size := range map[string]int{"big.txt": 100, "small.txt": 5} {
+		if err := os.WriteFile(filepath.Join(root, name),
+			make([]byte, size), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	m := New(root) // default SortByName: big.txt, small.txt
+	m2 := m.SetSortOrder(SortBySize)
+
+	if m2.CurrentSortOrder() != SortBySize {
+		t.Errorf("CurrentSortOrder = %v, want SortBySize", m2.CurrentSortOrder())
+	}
+	if len(m2.entries) == 0 {
+		t.Fatal("no entries after SetSortOrder")
+	}
+	if m2.entries[0].Name != "big.txt" {
+		t.Errorf("after SortBySize first entry = %q, want big.txt", m2.entries[0].Name)
+	}
+	// Cursor should reset to 0.
+	if m2.cursor != 0 {
+		t.Errorf("cursor after SetSortOrder = %d, want 0", m2.cursor)
+	}
+}
+
+func TestSortOrder_Label(t *testing.T) {
+	cases := map[SortOrder]string{
+		SortByName: "Name",
+		SortByTime: "Timestamp",
+		SortBySize: "Size",
+		SortByType: "Type",
+	}
+	for so, want := range cases {
+		if got := so.Label(); got != want {
+			t.Errorf("SortOrder(%d).Label() = %q, want %q", so, got, want)
+		}
+	}
+}
+
+// fileNames returns just the Name field of each entry (files only).
+func fileNames(entries []FileEntry) []string {
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir {
+			out = append(out, e.Name)
+		}
+	}
+	return out
+}
+
+// timeFromUnix converts a Unix timestamp to time.Time (used in mtime tests).
+func timeFromUnix(sec int64) time.Time {
+	return time.Unix(sec, 0)
 }
 
 func TestCursorBounds_Up(t *testing.T) {
@@ -195,6 +342,34 @@ func TestDoubleClickDetection_Opens(t *testing.T) {
 	})
 	if m3.cwd != filepath.Join(root, "child") {
 		t.Errorf("double click should navigate into child, cwd = %q", m3.cwd)
+	}
+}
+
+func TestSelectedPath_WithEntries(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt"})
+	m := New(root)
+	// cursor starts at 0, first entry is a.txt
+	got := m.SelectedPath()
+	want := filepath.Join(root, "a.txt")
+	if got != want {
+		t.Errorf("SelectedPath() = %q, want %q", got, want)
+	}
+
+	// Move cursor to second entry.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	got = m.SelectedPath()
+	want = filepath.Join(root, "b.txt")
+	if got != want {
+		t.Errorf("SelectedPath() after down = %q, want %q", got, want)
+	}
+}
+
+func TestSelectedPath_EmptyDir(t *testing.T) {
+	root := setupTempDir(t, nil, nil)
+	m := New(root)
+	got := m.SelectedPath()
+	if got != root {
+		t.Errorf("SelectedPath() on empty dir = %q, want %q (CWD)", got, root)
 	}
 }
 

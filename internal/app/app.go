@@ -7,10 +7,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/bjcarnes/splorer/internal/associations"
+	"github.com/bjcarnes/splorer/internal/bookmarks"
 	"github.com/bjcarnes/splorer/internal/filetree"
 	"github.com/bjcarnes/splorer/internal/menubar"
 	"github.com/bjcarnes/splorer/internal/opener"
 	"github.com/bjcarnes/splorer/internal/search"
+	"github.com/bjcarnes/splorer/internal/sortdialog"
 )
 
 // menuBarHeight is the number of terminal lines the menu bar occupies.
@@ -23,8 +25,14 @@ type openOpenersMsg struct{}
 // presses the Ctrl+F shortcut.
 type openSearchMsg struct{}
 
+// openBookmarksMsg is dispatched when the user activates the Bookmarks menu item.
+type openBookmarksMsg struct{}
+
+// openSortMsg is dispatched when the user activates the Sort menu item.
+type openSortMsg struct{}
+
 // Model is the root Bubble Tea model. It owns the menu bar, the file tree,
-// and (when open) either the Openers dialog or the Find search view.
+// and (when open) overlays for search, openers, bookmarks, or create-bookmark.
 type Model struct {
 	menu       menubar.MenuBar
 	filetree   filetree.Model
@@ -32,14 +40,26 @@ type Model struct {
 	dialogOpen bool
 	srch       search.Model
 	searchOpen bool
-	assocs     map[string]string
-	width      int
-	height     int
+
+	bmarksPage  bookmarks.Page
+	bmarksOpen  bool
+	createBmark bookmarks.CreateDialog
+	createOpen  bool
+
+	sortDlg     sortdialog.Dialog
+	sortDlgOpen bool
+
+	assocs       map[string]string
+	bookmarkList []bookmarks.Bookmark
+
+	width  int
+	height int
 }
 
 // New creates a root model starting in cwd.
 func New(cwd string) Model {
-	assocs, _ := associations.Load() // best-effort; errors silently ignored at startup
+	assocs, _ := associations.Load()
+	bmarks, _ := bookmarks.Load()
 
 	mb := menubar.New([]menubar.Item{
 		{
@@ -52,12 +72,23 @@ func New(cwd string) Model {
 			Hotkey: "alt+o",
 			Msg:    openOpenersMsg{},
 		},
+		{
+			Label:  "Bookmarks",
+			Hotkey: "alt+b",
+			Msg:    openBookmarksMsg{},
+		},
+		{
+			Label:  "Sort",
+			Hotkey: "alt+s",
+			Msg:    openSortMsg{},
+		},
 	})
 
 	return Model{
-		menu:     mb,
-		filetree: filetree.New(cwd),
-		assocs:   assocs,
+		menu:         mb,
+		filetree:     filetree.New(cwd),
+		assocs:       assocs,
+		bookmarkList: bmarks,
 	}
 }
 
@@ -68,14 +99,20 @@ func (m Model) Init() tea.Cmd {
 
 // Update routes messages through the active component.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Search view takes exclusive control when open.
 	if m.searchOpen {
 		return m.updateSearch(msg)
 	}
-
-	// Dialog takes exclusive control when open.
 	if m.dialogOpen {
 		return m.updateDialog(msg)
+	}
+	if m.bmarksOpen {
+		return m.updateBookmarks(msg)
+	}
+	if m.createOpen {
+		return m.updateCreateBmark(msg)
+	}
+	if m.sortDlgOpen {
+		return m.updateSortDialog(msg)
 	}
 
 	switch msg := msg.(type) {
@@ -90,20 +127,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dialogOpen = true
 		return m, nil
 
-	case filetree.OpenFileMsg:
-		ext := strings.ToLower(filepath.Ext(msg.Path))
-		if prog, ok := m.assocs[ext]; ok {
-			opener.OpenFileWith(msg.Path, prog) //nolint:errcheck
-		} else {
-			opener.OpenFile(msg.Path) //nolint:errcheck
+	case openBookmarksMsg:
+		m.bmarksPage = bookmarks.NewPage(m.bookmarkList, m.width, m.height-menuBarHeight)
+		m.bmarksOpen = true
+		return m, nil
+
+	case openSortMsg:
+		m.sortDlg = sortdialog.New(m.filetree.CurrentSortOrder())
+		m.sortDlgOpen = true
+		return m, nil
+
+	case bookmarks.NavigateDirMsg:
+		if ft, err := m.filetree.NavigateTo(msg.Path); err == nil {
+			m.filetree = ft
 		}
+		return m, nil
+
+	case filetree.OpenFileMsg:
+		m.openFile(msg.Path)
 		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.menu.Width = msg.Width
-		// Give the filetree the height minus the menu bar row.
 		ft, cmd := m.filetree.Update(tea.WindowSizeMsg{
 			Width:  msg.Width,
 			Height: msg.Height - menuBarHeight,
@@ -113,13 +160,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseClickMsg:
 		if int(msg.Y) < menuBarHeight {
-			// Click landed on the menu bar.
 			if cmd := m.menu.HandleClick(int(msg.X)); cmd != nil {
 				return m, cmd
 			}
 			return m, nil
 		}
-		// Translate Y into the filetree's coordinate space.
 		ft, cmd := m.filetree.Update(tea.MouseClickMsg{
 			X:      msg.X,
 			Y:      msg.Y - menuBarHeight,
@@ -135,13 +180,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyPressMsg:
-		// Ctrl+F opens search regardless of other bindings.
 		if msg.String() == "ctrl+f" {
 			m.srch = search.New(m.filetree.CWD(), m.width, m.height-menuBarHeight)
 			m.searchOpen = true
 			return m, nil
 		}
-		// Menu bar hotkeys take priority over filetree bindings.
+		if msg.String() == "ctrl+b" {
+			m.createBmark = bookmarks.NewCreateDialog(m.filetree.SelectedPath())
+			m.createOpen = true
+			return m, nil
+		}
 		if cmd := m.menu.HandleKey(msg); cmd != nil {
 			return m, cmd
 		}
@@ -150,18 +198,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Forward any unhandled messages (e.g. tea.QuitMsg) to the filetree.
 	ft, cmd := m.filetree.Update(msg)
 	m.filetree = ft
 	return m, cmd
 }
 
-// updateSearch routes events to the open search view. It also intercepts
-// messages that search emits as commands (NavigateDirMsg, OpenFileMsg) so the
-// app can act on them while the search view is still "active".
+// updateSearch routes events to the open search view.
 func (m Model) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Window resize must update both the filetree (kept in sync even when
-	// hidden) and the search view.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = ws.Width
 		m.height = ws.Height
@@ -179,13 +222,9 @@ func (m Model) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Commands returned by the search model fire on subsequent Update calls.
-	// Handle the two result-activation message types before they reach the
-	// search model (which would ignore them anyway).
 	switch msg := msg.(type) {
 
 	case search.NavigateDirMsg:
-		// Navigate the underlying file tree and close the search view.
 		m.searchOpen = false
 		if ft, err := m.filetree.NavigateTo(msg.Path); err == nil {
 			m.filetree = ft
@@ -193,44 +232,144 @@ func (m Model) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case filetree.OpenFileMsg:
-		// Open the file using the configured opener; leave search view open so
-		// the user can continue browsing results.
-		ext := strings.ToLower(filepath.Ext(msg.Path))
-		if prog, ok := m.assocs[ext]; ok {
-			opener.OpenFileWith(msg.Path, prog) //nolint:errcheck
-		} else {
-			opener.OpenFile(msg.Path) //nolint:errcheck
-		}
+		m.openFile(msg.Path)
 		return m, nil
 	}
 
-	// All other messages (key events, mouse events, resultBatchMsg, …) go to
-	// the search model.
 	sm, cmd := m.srch.Update(msg)
 	m.srch = sm
-
 	if sm.IsClosed() {
 		m.searchOpen = false
 	}
-
 	return m, cmd
 }
 
-// updateDialog routes an event to the open dialog and handles its closure.
+// updateDialog routes an event to the open openers dialog and handles closure.
 func (m Model) updateDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 	d, cmd := m.dialog.Update(msg)
 	if d.IsClosed() {
 		m.dialogOpen = false
 		m.assocs = d.Assocs()
-		associations.Save(m.assocs) //nolint:errcheck // best-effort save
+		associations.Save(m.assocs) //nolint:errcheck
 	} else {
 		m.dialog = d
 	}
 	return m, cmd
 }
 
-// View renders the full screen. AltScreen and mouse mode are set here so they
-// are declared on every frame.
+// updateBookmarks routes events to the bookmarks page and handles closure/activation.
+func (m Model) updateBookmarks(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = ws.Width
+		m.height = ws.Height
+		m.menu.Width = ws.Width
+		ft, _ := m.filetree.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.filetree = ft
+		p, cmd := m.bmarksPage.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.bmarksPage = p
+		return m, cmd
+	}
+
+	switch msg := msg.(type) {
+	case bookmarks.NavigateDirMsg:
+		m.bmarksOpen = false
+		m.bookmarkList = m.bmarksPage.Bookmarks()
+		bookmarks.Save(m.bookmarkList) //nolint:errcheck
+		if ft, err := m.filetree.NavigateTo(msg.Path); err == nil {
+			m.filetree = ft
+		}
+		return m, nil
+
+	case filetree.OpenFileMsg:
+		m.openFile(msg.Path)
+		return m, nil
+	}
+
+	p, cmd := m.bmarksPage.Update(msg)
+	if p.IsClosed() {
+		m.bmarksOpen = false
+		m.bookmarkList = p.Bookmarks()
+		bookmarks.Save(m.bookmarkList) //nolint:errcheck
+	} else {
+		m.bmarksPage = p
+	}
+	return m, cmd
+}
+
+// updateCreateBmark routes events to the create-bookmark dialog and handles closure.
+func (m Model) updateCreateBmark(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = ws.Width
+		m.height = ws.Height
+		m.menu.Width = ws.Width
+		ft, _ := m.filetree.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.filetree = ft
+		return m, nil
+	}
+
+	d, cmd := m.createBmark.Update(msg)
+	if d.IsClosed() {
+		m.createOpen = false
+		if d.IsSaved() {
+			bm := bookmarks.Bookmark{
+				Name: strings.TrimSpace(d.Name()),
+				Path: d.BookmarkPath(),
+			}
+			m.bookmarkList = append(m.bookmarkList, bm)
+			bookmarks.Save(m.bookmarkList) //nolint:errcheck
+		}
+	} else {
+		m.createBmark = d
+	}
+	return m, cmd
+}
+
+// updateSortDialog routes events to the sort picker and applies a new sort order on save.
+func (m Model) updateSortDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = ws.Width
+		m.height = ws.Height
+		m.menu.Width = ws.Width
+		ft, _ := m.filetree.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.filetree = ft
+		return m, nil
+	}
+
+	d, cmd := m.sortDlg.Update(msg)
+	if d.IsClosed() {
+		m.sortDlgOpen = false
+		if d.IsSaved() {
+			m.filetree = m.filetree.SetSortOrder(d.Chosen())
+		}
+	} else {
+		m.sortDlg = d
+	}
+	return m, cmd
+}
+
+// openFile opens the file at path using the configured association or xdg-open.
+func (m Model) openFile(path string) {
+	ext := strings.ToLower(filepath.Ext(path))
+	if prog, ok := m.assocs[ext]; ok {
+		opener.OpenFileWith(path, prog) //nolint:errcheck
+	} else {
+		opener.OpenFile(path) //nolint:errcheck
+	}
+}
+
+// View renders the full screen.
 func (m Model) View() tea.View {
 	menuLine := m.menu.Render()
 
@@ -240,6 +379,12 @@ func (m Model) View() tea.View {
 		body = m.srch.Render()
 	case m.dialogOpen:
 		body = m.dialog.Render(m.width, m.height-menuBarHeight)
+	case m.bmarksOpen:
+		body = m.bmarksPage.Render()
+	case m.createOpen:
+		body = m.createBmark.Render(m.width, m.height-menuBarHeight)
+	case m.sortDlgOpen:
+		body = m.sortDlg.Render(m.width, m.height-menuBarHeight)
 	default:
 		body = m.filetree.Render()
 	}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -30,6 +29,7 @@ type Model struct {
 	entries    []FileEntry
 	cursor     int
 	offset     int // scroll: index of first visible entry
+	sortOrder  SortOrder
 	width      int
 	height     int
 	lastClick  time.Time
@@ -47,6 +47,30 @@ func New(cwd string) Model {
 // CWD returns the directory the model is currently showing.
 func (m Model) CWD() string { return m.cwd }
 
+// CurrentSortOrder returns the active sort order.
+func (m Model) CurrentSortOrder() SortOrder { return m.sortOrder }
+
+// SetSortOrder applies a new sort order and re-sorts the current directory.
+func (m Model) SetSortOrder(so SortOrder) Model {
+	m.sortOrder = so
+	entries, err := loadDir(m.cwd, so)
+	if err == nil {
+		m.entries = entries
+		m.cursor = 0
+		m.offset = 0
+	}
+	return m
+}
+
+// SelectedPath returns the path of the currently highlighted entry.
+// Returns CWD if the directory is empty.
+func (m Model) SelectedPath() string {
+	if len(m.entries) == 0 {
+		return m.cwd
+	}
+	return m.entries[m.cursor].Path
+}
+
 // NavigateTo navigates the model to path, returning the updated model. Returns
 // an error if the directory cannot be read; in that case the model is unchanged.
 func (m Model) NavigateTo(path string) (Model, error) {
@@ -56,7 +80,7 @@ func (m Model) NavigateTo(path string) (Model, error) {
 // navigateTo loads the directory at path into the model. On error the error
 // message is stored and the model is returned unchanged.
 func (m Model) navigateTo(path string) (Model, error) {
-	entries, err := loadDir(path)
+	entries, err := loadDir(path, m.sortOrder)
 	if err != nil {
 		m.err = fmt.Sprintf("cannot read %s: %s", path, err)
 		return m, err
@@ -69,9 +93,9 @@ func (m Model) navigateTo(path string) (Model, error) {
 	return m, nil
 }
 
-// loadDir reads the directory at path and returns sorted entries (dirs first,
-// then files; each group sorted case-insensitively by name).
-func loadDir(path string) ([]FileEntry, error) {
+// loadDir reads the directory at path and returns sorted entries. Directories
+// always appear before files; within each group entries are ordered by so.
+func loadDir(path string, so SortOrder) ([]FileEntry, error) {
 	des, err := os.ReadDir(path)
 	if err != nil {
 		return nil, err
@@ -96,12 +120,8 @@ func loadDir(path string) ([]FileEntry, error) {
 			files = append(files, e)
 		}
 	}
-	sort.Slice(dirs, func(i, j int) bool {
-		return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name)
-	})
-	sort.Slice(files, func(i, j int) bool {
-		return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
-	})
+	sortGroup(dirs, so)
+	sortGroup(files, so)
 	return append(dirs, files...), nil
 }
 
@@ -252,8 +272,14 @@ func (m Model) Render() string {
 
 	var b strings.Builder
 
-	// Line 0: current path
-	b.WriteString(headerStyle.Render(" " + m.cwd))
+	// Line 0: current path + sort label on the right
+	sortLabel := dimStyle.Render("[" + m.sortOrder.Label() + "]")
+	pathStr := headerStyle.Render(" " + m.cwd)
+	gap := m.width - lipgloss.Width(pathStr) - lipgloss.Width(sortLabel)
+	if gap < 1 {
+		gap = 1
+	}
+	b.WriteString(pathStr + strings.Repeat(" ", gap) + sortLabel)
 	b.WriteRune('\n')
 	// Line 1: separator
 	b.WriteString(sep)
@@ -335,11 +361,11 @@ func (m Model) Render() string {
 		leftStr = lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf(" %d items", len(m.entries)))
 	}
 	rightStr := dimStyle.Render("q quit  ↑↓/jk navigate  enter open  ←/h go up  ~ home")
-	gap := m.width - lipgloss.Width(leftStr) - lipgloss.Width(rightStr)
-	if gap < 1 {
-		gap = 1
+	footerGap := m.width - lipgloss.Width(leftStr) - lipgloss.Width(rightStr)
+	if footerGap < 1 {
+		footerGap = 1
 	}
-	b.WriteString(leftStr + strings.Repeat(" ", gap) + rightStr)
+	b.WriteString(leftStr + strings.Repeat(" ", footerGap) + rightStr)
 
 	return b.String()
 }

@@ -10,9 +10,11 @@ case-insensitively, followed by files in the same order. Each row shows the
 entry name, size (or "dir"), and last-modified date.
 
 A menu bar at the top of the screen provides access to application features.
-It contains a **Find** menu for searching files by name and an **Openers** menu
+It contains a **Find** menu for searching files by name, an **Openers** menu
 for configuring which program opens files of a given extension (overriding the
-system default, `xdg-open`).
+system default, `xdg-open`), a **Bookmarks** menu for saving and navigating
+to frequently-used files and directories, and a **Sort** menu for changing the
+order in which directory entries are listed.
 
 ### Controls
 
@@ -36,8 +38,11 @@ system default, `xdg-open`).
 | Input | Action |
 |---|---|
 | `Ctrl+F` | Open the Find / search view |
+| `Ctrl+B` | Open the Create Bookmark dialog for the selected entry |
 | `Alt+F` | Open the Find / search view via the menu |
 | `Alt+O` | Open the Openers dialog |
+| `Alt+B` | Open the Bookmarks page |
+| `Alt+S` | Open the Sort dialog |
 | Click on a menu label | Open that menu's dialog |
 
 **Find / search view**
@@ -74,6 +79,55 @@ displayed in the results list.
 | `Shift+Tab` | Cycle focus in reverse |
 | `Enter` (in Program field) | Add the new association |
 | `Esc` | Close the dialog (changes are saved automatically) |
+
+**Create Bookmark dialog** (opened with `Ctrl+B`)
+
+| Input | Action |
+|---|---|
+| Typing | Enter a name for the bookmark |
+| `Enter` | Save the bookmark (requires at least one character) |
+| `Esc` | Cancel without saving |
+
+**Bookmarks page** (opened with `Alt+B`)
+
+| Input | Action |
+|---|---|
+| `↑` / `↓` / `j` / `k` | Navigate the bookmark list |
+| `Enter` / `→` / `l` | Open bookmark (navigate to directory or open file) |
+| `Del` | Open delete confirmation dialog for the selected bookmark |
+| Single click | Move cursor to row |
+| Double-click | Open bookmark |
+| Scroll wheel | Move cursor up / down |
+| `Esc` / `Backspace` | Close the bookmarks page |
+
+**Sort dialog** (opened with `Alt+S`)
+
+| Input | Action |
+|---|---|
+| `↑` / `↓` / `j` / `k` | Move through the four sort orders |
+| `Enter` | Apply the selected sort order and close |
+| `Esc` | Cancel without changing the sort order |
+
+The active sort order is shown in the top-right corner of the file tree.
+Sort orders: **Name** (alphabetical, default), **Timestamp** (newest first),
+**Size** (largest first), **Type** (by file extension, then name).
+Directories always appear before files regardless of sort order.
+
+**Delete confirmation dialog** (inside the Bookmarks page)
+
+| Input | Action |
+|---|---|
+| `y` / `Y` | Confirm deletion |
+| `n` / `N` | Cancel |
+| `Esc` | Cancel |
+
+### Bookmarks
+
+Bookmarks are stored in `~/.config/splorer/bookmarks.json` and are loaded at
+startup. Each bookmark has a name and a path (file or directory). Press
+`Ctrl+B` from the file tree to bookmark the currently selected entry; the
+dialog shows the path and lets you type a name. Changes are saved
+automatically when the dialog closes.
 
 ### File associations
 
@@ -148,13 +202,32 @@ splorer/
     │   ├── dialog.go             Openers dialog component: association list,
     │   │                         add-association form, text inputs, focus state.
     │   └── dialog_test.go
+    ├── bookmarks/
+    │   ├── store.go              Load() / Save() — reads and writes
+    │   │                         ~/.config/splorer/bookmarks.json.
+    │   ├── store_test.go
+    │   ├── create.go             CreateDialog component: name input, path display,
+    │   │                         OK/Cancel, saves on Enter (≥1 char), Esc cancels.
+    │   ├── create_test.go
+    │   ├── page.go               Bookmarks list page: navigation, activation
+    │   │                         (NavigateDirMsg for dirs, OpenFileMsg for files),
+    │   │                         inline delete-confirmation dialog, mouse support.
+    │   └── page_test.go
+    ├── sortdialog/
+    │   ├── dialog.go             Sort-order picker: four options (Name / Timestamp /
+    │   │                         Size / Type), arrow-key navigation, Enter confirms,
+    │   │                         Esc cancels. Chosen() returns filetree.SortOrder.
+    │   └── dialog_test.go
     ├── filetree/
     │   ├── item.go               FileEntry struct and humanizeSize helper.
     │   ├── item_test.go
     │   ├── model.go              File-tree component: directory loading, cursor/
     │   │                         scroll, keyboard and mouse handling, rendering.
     │   │                         Emits OpenFileMsg instead of calling opener directly.
-    │   └── model_test.go
+    │   ├── model_test.go
+    │   └── sort.go               SortOrder type, Label(), AllSortOrders, sortGroup().
+    │                             Dirs always precede files; order within each group
+    │                             is controlled by the active SortOrder.
     ├── menubar/
     │   ├── menubar.go            MenuBar and Item types. Items are activated by
     │   │                         keyboard hotkey or mouse click. Designed to accept
@@ -225,6 +298,22 @@ splorer/
   `app.Update` calls `associations.Save` each time the dialog is dismissed.
   Failures are ignored (best-effort). Changes made in the dialog are live
   immediately — there is no explicit "cancel" that discards edits.
+
+- **Sort order is stored in the filetree model and applied on every directory load.**  
+  `filetree.Model` holds a `sortOrder SortOrder` field (default `SortByName`).
+  `loadDir` passes it to `sortGroup`, which sorts directories and files
+  independently so directories always appear first. `SetSortOrder` reloads the
+  current directory with the new order and resets the cursor to 0. The active
+  sort order label is displayed in the top-right corner of the file tree header.
+
+- **Bookmarks follow the same save-on-close pattern.**  
+  `app.Update` calls `bookmarks.Save` when the create dialog closes with a
+  saved name, and again when the bookmarks page closes (in case entries were
+  deleted). The `Page` operates on a copy of the bookmark slice; the caller
+  reads it back via `Page.Bookmarks()` on closure. Activating a directory
+  bookmark closes the page and navigates the file tree; activating a file
+  bookmark opens it with the configured opener and keeps the page open so the
+  user can continue browsing.
 
 - **Double-click is implemented manually.**  
   Bubble Tea v2 has no built-in double-click. The filetree records the time and
