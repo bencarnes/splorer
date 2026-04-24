@@ -5,10 +5,13 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/bjcarnes/splorer/internal/associations"
 	"github.com/bjcarnes/splorer/internal/bookmarks"
+	"github.com/bjcarnes/splorer/internal/contentsearch"
 	"github.com/bjcarnes/splorer/internal/filetree"
+	"github.com/bjcarnes/splorer/internal/finddropdown"
 	"github.com/bjcarnes/splorer/internal/menubar"
 	"github.com/bjcarnes/splorer/internal/opener"
 	"github.com/bjcarnes/splorer/internal/search"
@@ -21,9 +24,12 @@ const menuBarHeight = 1
 // openOpenersMsg is dispatched when the user activates the Openers menu item.
 type openOpenersMsg struct{}
 
-// openSearchMsg is dispatched when the user activates the Find menu item or
-// presses the Ctrl+F shortcut.
-type openSearchMsg struct{}
+// openSearchByNameMsg is dispatched when the user activates Find → By Name
+// (or presses Ctrl+F as a shortcut to the same thing).
+type openSearchByNameMsg struct{}
+
+// openSearchByContentMsg is dispatched when the user activates Find → By Content.
+type openSearchByContentMsg struct{}
 
 // openBookmarksMsg is dispatched when the user activates the Bookmarks menu item.
 type openBookmarksMsg struct{}
@@ -34,12 +40,20 @@ type openSortMsg struct{}
 // Model is the root Bubble Tea model. It owns the menu bar, the file tree,
 // and (when open) overlays for search, openers, bookmarks, or create-bookmark.
 type Model struct {
-	menu       menubar.MenuBar
-	filetree   filetree.Model
+	menu     menubar.MenuBar
+	filetree filetree.Model
+
 	dialog     associations.Dialog
 	dialogOpen bool
+
 	srch       search.Model
 	searchOpen bool
+
+	csrch      contentsearch.Model
+	csrchOpen  bool
+
+	findDropdown finddropdown.Model
+	dropdownOpen bool
 
 	bmarksPage  bookmarks.Page
 	bmarksOpen  bool
@@ -65,7 +79,10 @@ func New(cwd string) Model {
 		{
 			Label:  "Find",
 			Hotkey: "alt+f",
-			Msg:    openSearchMsg{},
+			SubItems: []menubar.SubItem{
+				{Label: "By Name", Key: 'n', Msg: openSearchByNameMsg{}},
+				{Label: "By Content", Key: 'c', Msg: openSearchByContentMsg{}},
+			},
 		},
 		{
 			Label:  "Openers",
@@ -106,8 +123,17 @@ func (m Model) CWD() string {
 
 // Update routes messages through the active component.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Dropdown takes priority over other overlays — it only opens from the
+	// main screen, so there's no ambiguity with deeper overlays.
+	if m.dropdownOpen {
+		return m.updateFindDropdown(msg)
+	}
+
 	if m.searchOpen {
 		return m.updateSearch(msg)
+	}
+	if m.csrchOpen {
+		return m.updateContentSearch(msg)
 	}
 	if m.dialogOpen {
 		return m.updateDialog(msg)
@@ -124,9 +150,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 
-	case openSearchMsg:
+	case menubar.OpenDropdownMsg:
+		// Anchor the dropdown under the clicked/hotkeyed item by reading the
+		// menu bar's item ranges.
+		ranges := m.menu.ItemRanges()
+		x := 1
+		if msg.Index >= 0 && msg.Index < len(ranges) {
+			x = ranges[msg.Index][0]
+		}
+		if msg.Index >= 0 && msg.Index < len(m.menu.Items) {
+			m.findDropdown = finddropdown.New(m.menu.Items[msg.Index].SubItems, x)
+			m.dropdownOpen = true
+		}
+		return m, nil
+
+	case openSearchByNameMsg:
 		m.srch = search.New(m.filetree.CWD(), m.width, m.height-menuBarHeight)
 		m.searchOpen = true
+		return m, nil
+
+	case openSearchByContentMsg:
+		m.csrch = contentsearch.New(m.filetree.CWD(), m.width, m.height-menuBarHeight)
+		m.csrchOpen = true
 		return m, nil
 
 	case openOpenersMsg:
@@ -195,6 +240,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "esc":
 			return m, tea.Quit
 		}
+		// Ctrl+F is a power-user shortcut straight to the name-search view,
+		// bypassing the Find dropdown. Keep it for continuity.
 		if msg.String() == "ctrl+f" {
 			m.srch = search.New(m.filetree.CWD(), m.width, m.height-menuBarHeight)
 			m.searchOpen = true
@@ -218,7 +265,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// updateSearch routes events to the open search view.
+// updateFindDropdown routes events to the open dropdown. Clicks outside the
+// dropdown bounds close it without being forwarded (so the underlying body
+// isn't acted on). Activations produce the sub-item's Msg as a Cmd, which
+// the event loop will feed back in on the next tick.
+func (m Model) updateFindDropdown(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if click, ok := msg.(tea.MouseClickMsg); ok {
+		if !m.findDropdown.Contains(int(click.X), int(click.Y)) {
+			m.dropdownOpen = false
+			return m, nil
+		}
+	}
+
+	d, cmd := m.findDropdown.Update(msg)
+	if d.IsClosed() {
+		m.dropdownOpen = false
+	} else {
+		m.findDropdown = d
+	}
+	return m, cmd
+}
+
+// updateSearch routes events to the open name-search view.
 func (m Model) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = ws.Width
@@ -255,6 +323,38 @@ func (m Model) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.srch = sm
 	if sm.IsClosed() {
 		m.searchOpen = false
+	}
+	return m, cmd
+}
+
+// updateContentSearch routes events to the open content-search view.
+func (m Model) updateContentSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = ws.Width
+		m.height = ws.Height
+		m.menu.Width = ws.Width
+		ft, _ := m.filetree.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.filetree = ft
+		cs, cmd := m.csrch.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.csrch = cs
+		return m, cmd
+	}
+
+	if fm, ok := msg.(filetree.OpenFileMsg); ok {
+		m.openFile(fm.Path)
+		return m, nil
+	}
+
+	cs, cmd := m.csrch.Update(msg)
+	m.csrch = cs
+	if cs.IsClosed() {
+		m.csrchOpen = false
 	}
 	return m, cmd
 }
@@ -374,7 +474,8 @@ func (m Model) updateSortDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// openFile opens the file at path using the configured association or xdg-open.
+// openFile opens the file at path using the configured association or the
+// platform default opener.
 func (m Model) openFile(path string) {
 	ext := strings.ToLower(filepath.Ext(path))
 	if prog, ok := m.assocs[ext]; ok {
@@ -392,6 +493,8 @@ func (m Model) View() tea.View {
 	switch {
 	case m.searchOpen:
 		body = m.srch.Render()
+	case m.csrchOpen:
+		body = m.csrch.Render()
 	case m.dialogOpen:
 		body = m.dialog.Render(m.width, m.height-menuBarHeight)
 	case m.bmarksOpen:
@@ -404,8 +507,58 @@ func (m Model) View() tea.View {
 		body = m.filetree.Render()
 	}
 
+	// The dropdown overlay, if open, is spliced onto the body rows so the
+	// underlying filetree stays visible around it.
+	if m.dropdownOpen {
+		body = spliceOverlay(
+			body,
+			m.findDropdown.Render(),
+			m.findDropdown.X(),
+			m.findDropdown.Y()-menuBarHeight,
+		)
+	}
+
 	v := tea.NewView(menuLine + "\n" + body)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+// spliceOverlay renders `over` onto `base` at (x, y), where y is 0-indexed
+// from the first line of `base`. ANSI escapes in `base` are preserved
+// outside the overlay region; inside the region, base content is replaced by
+// over. Used to draw the Find dropdown on top of the file-tree body.
+func spliceOverlay(base, over string, x, y int) string {
+	baseLines := strings.Split(base, "\n")
+	overLines := strings.Split(over, "\n")
+
+	for i, line := range overLines {
+		row := y + i
+		if row < 0 || row >= len(baseLines) {
+			continue
+		}
+		baseLines[row] = spliceAtColumn(baseLines[row], line, x)
+	}
+	return strings.Join(baseLines, "\n")
+}
+
+// spliceAtColumn returns base with its cells at [x, x+width(over)) replaced
+// by over. Uses the ANSI-aware Truncate/TruncateLeft helpers from
+// charmbracelet/x/ansi so styled base content outside the replaced region
+// keeps its escape codes intact.
+func spliceAtColumn(base, over string, x int) string {
+	overW := ansi.StringWidth(over)
+	baseW := ansi.StringWidth(base)
+
+	left := ansi.Truncate(base, x, "")
+	leftW := ansi.StringWidth(left)
+	if leftW < x {
+		left += strings.Repeat(" ", x-leftW)
+	}
+
+	var right string
+	if x+overW < baseW {
+		right = ansi.TruncateLeft(base, x+overW, "")
+	}
+	return left + over + right
 }

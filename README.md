@@ -37,15 +37,26 @@ for saving and navigating to frequently-used files and directories, and a
 
 | Input | Action |
 |---|---|
-| `Ctrl+F` | Open the Find / search view |
+| `Ctrl+F` | Open Find → By Name directly (power-user shortcut) |
 | `Ctrl+B` | Open the Create Bookmark dialog for the selected entry |
-| `Alt+F` | Open the Find / search view via the menu |
+| `Alt+F` | Open the Find dropdown menu |
 | `Alt+O` | Open the Openers dialog |
 | `Alt+B` | Open the Bookmarks page |
 | `Alt+S` | Open the Sort dialog |
-| Click on a menu label | Open that menu's dialog |
+| Click on a menu label | Open that menu's dialog (Find opens the dropdown) |
 
-**Find / search view**
+**Find dropdown** (opened with `Alt+F` or by clicking `Find ▾`)
+
+| Input | Action |
+|---|---|
+| `↑` / `k` · `↓` / `j` | Move selection |
+| `n` | Activate **By Name** |
+| `c` | Activate **By Content** |
+| `Enter` / `→` / `l` | Activate the highlighted option |
+| Single click on an option | Activate it |
+| `Esc` | Close the dropdown |
+
+**Find / By Name view** (activated from the Find dropdown or `Ctrl+F`)
 
 | Input | Action |
 |---|---|
@@ -68,6 +79,36 @@ sub-directories. Patterns follow `filepath.Match` syntax — both exact names
 (`main.go`) and wildcards (`*.go`, `foo*`) are supported. Results are sorted by
 their full path. Relative paths (relative to the directory being searched) are
 displayed in the results list.
+
+**Find / By Content view** (activated from the Find dropdown)
+
+| Input | Action |
+|---|---|
+| Typing in **Pattern** | Update the search pattern |
+| `Tab` / `Shift+Tab` | Switch focus between the Pattern and Ext fields |
+| Typing in **Ext** | Comma-separated extension filter (e.g. `.go,.md`; empty = all files) |
+| `Alt+R` | Toggle regex mode on/off (always active, regardless of focus) |
+| `Alt+I` | Toggle case-insensitive matching (always active) |
+| `Enter` | Start the search |
+| `↑` / `k` · `↓` / `j` | Move cursor up/down in results |
+| `PgUp` / `PgDn` | Scroll one page |
+| `Enter` / `→` / `l` · Double-click | Open the file at that match |
+| Single click on a result | Move cursor to that row |
+| `Esc` | Cancel a running search / close the view |
+
+Content search scans file contents line by line starting from the directory
+the file tree is currently showing. Each result shows `relative/path:line:
+matched text`, with the matched text dimmed so paths scan quickly. Matching is
+a plain substring by default; toggle `Alt+R` to interpret the pattern as a
+stdlib-regex (RE2 flavor — no lookarounds or backrefs). `Alt+I` makes the
+match case-insensitive. The header reminds you of both toggles' current
+state so they're discoverable without consulting this table.
+
+Files that are probably binary are skipped (heuristic: the first 8 KB
+contains a NUL byte — the same rule grep / git / ripgrep use). Files larger
+than 10 MB and symbolic links are also skipped. If you use the extension
+filter (`Ext: .go,.md`), matching files go through the binary check but
+non-matching files are cheaply skipped before any bytes are read.
 
 **Openers dialog**
 
@@ -271,10 +312,34 @@ splorer/
     │                             Dirs always precede files; order within each group
     │                             is controlled by the active SortOrder.
     ├── menubar/
-    │   ├── menubar.go            MenuBar and Item types. Items are activated by
-    │   │                         keyboard hotkey or mouse click. Designed to accept
-    │   │                         additional items and future dropdown sub-menus.
+    │   ├── menubar.go            MenuBar, Item, and SubItem types. Items are
+    │   │                         activated by hotkey or click. Items with
+    │   │                         SubItems emit OpenDropdownMsg instead of
+    │   │                         their own Msg, letting the app mount a
+    │   │                         finddropdown component below them.
     │   └── menubar_test.go
+    ├── finddropdown/
+    │   ├── dropdown.go           Small overlay dropdown component for menubar
+    │   │                         items with sub-items. Handles arrow nav,
+    │   │                         letter hotkeys (e.g. n, c), Enter, Esc, and
+    │   │                         click hit-testing. app.View splices its
+    │   │                         rendered box over the body using ANSI-aware
+    │   │                         column manipulation.
+    │   └── dropdown_test.go
+    ├── contentsearch/
+    │   ├── matcher.go            Mode (Exact / Regex), Options, matcher
+    │   │                         interface, extension-filter parser.
+    │   ├── matcher_test.go
+    │   ├── walker.go             runContentSearch goroutine: filepath.WalkDir
+    │   │                         with symlink skip, 10 MB size cap, NUL-byte
+    │   │                         binary detection, bufio line scan, per-line
+    │   │                         match dispatch.
+    │   ├── walker_test.go
+    │   └── model.go              Find-by-content view: two text fields
+    │                             (Pattern, Ext), Tab focus cycling, Alt+R
+    │                             regex toggle, Alt+I case toggle, streamed
+    │                             result batches via channel, result list
+    │                             navigation.
     ├── opener/
     │   ├── opener.go             OpenFileWith(path, prog) — shared across platforms.
     │   ├── opener_unix.go        OpenFile() via xdg-open          (build tag: !windows)
@@ -288,10 +353,11 @@ splorer/
     │   │                         the final --cd-file directory on exit.
     │   └── shellinit_test.go
     └── search/
-        ├── model.go              Find / search view: text-input phase, background
-        │                         recursive walk (filepath.WalkDir + context
-        │                         cancellation), streaming result batches via channel,
-        │                         sorted results list, keyboard/mouse navigation.
+        ├── model.go              Find-by-name view: filename-wildcard match,
+        │                         text-input phase, background recursive walk
+        │                         (filepath.WalkDir + context cancellation),
+        │                         streaming result batches via channel,
+        │                         sorted results list, keyboard/mouse nav.
         │                         Emits OpenFileMsg (files) and NavigateDirMsg (dirs).
         └── model_test.go
 ```
@@ -370,6 +436,37 @@ splorer/
   Bubble Tea v2 has no built-in double-click. The filetree records the time and
   entry index of the last click; a second click on the same row within 500 ms
   triggers open/navigate.
+
+- **Find is a menu-bar dropdown; sub-items carry their own messages.**  
+  `menubar.Item` has a `SubItems []SubItem` field. When a user activates an
+  item with sub-items (Alt+F or click), the menubar emits
+  `menubar.OpenDropdownMsg{Index}` rather than the item's own `Msg`; the app
+  responds by mounting a `finddropdown.Model` anchored to the menu item's
+  column. The dropdown's activation cmd emits the chosen sub-item's message
+  (`openSearchByNameMsg` / `openSearchByContentMsg`), and the app routes from
+  there — no special-casing of Find inside the menubar package. Rendering the
+  dropdown over the body uses `charmbracelet/x/ansi.Truncate` / `TruncateLeft`
+  so ANSI-styled background cells outside the dropdown's column range survive
+  the splice.
+
+- **By-Content search skips binaries via the first-NUL-byte heuristic.**  
+  `contentsearch.scanFile` reads up to 8 KB, scans for a NUL byte, and
+  skips the file if one is found. This is the same rule grep, git, and
+  ripgrep use, and it correctly classifies images, executables, compressed
+  archives, and most other binaries without reading them end-to-end. The
+  sample bytes are also the start of the line scan (via `io.MultiReader`),
+  so we don't re-read the prefix. Files over 10 MB and all symbolic links
+  are skipped outright. The extension filter applies before the binary
+  check, so constraining to `.go,.md` means we never even open unrelated
+  files.
+
+- **Alt+R / Alt+I toggles instead of Tab-cycled form fields.**  
+  Content search has a regex toggle and a case toggle in addition to two
+  text fields (Pattern, Ext). Putting the toggles on `Alt+R` / `Alt+I` keeps
+  them always-active regardless of which text field has focus, so the user
+  never has to think about "where am I typing". Tab is reserved for
+  switching between the two text fields — there's no way around needing
+  some focus cycling with multiple text inputs.
 
 - **`--cd-file` hands the exit directory back to the parent shell.**  
   A child process can't change its parent shell's cwd, so the usual "launcher

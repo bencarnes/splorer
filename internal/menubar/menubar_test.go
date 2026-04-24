@@ -126,6 +126,91 @@ func TestRender_NonEmpty(t *testing.T) {
 	}
 }
 
+func TestHandleKey_DropdownItemEmitsOpenDropdownMsg(t *testing.T) {
+	// An item with SubItems must emit OpenDropdownMsg when activated, not
+	// its own Msg — the owning app uses Index to mount the dropdown.
+	b := New([]Item{
+		{
+			Label:  "Find",
+			Hotkey: "alt+f",
+			Msg:    dummyMsg{label: "should-not-fire"},
+			SubItems: []SubItem{
+				{Label: "By Name", Key: 'n', Msg: dummyMsg{label: "byname"}},
+				{Label: "By Content", Key: 'c', Msg: dummyMsg{label: "bycontent"}},
+			},
+		},
+	})
+	cmd := b.HandleKey(tea.KeyPressMsg{Code: 'f', Mod: tea.ModAlt})
+	if cmd == nil {
+		t.Fatal("HandleKey returned nil for alt+f on dropdown item")
+	}
+	msg := cmd()
+	od, ok := msg.(OpenDropdownMsg)
+	if !ok {
+		t.Fatalf("expected OpenDropdownMsg, got %T: %v", msg, msg)
+	}
+	if od.Index != 0 {
+		t.Errorf("OpenDropdownMsg.Index = %d, want 0", od.Index)
+	}
+}
+
+func TestHandleClick_DropdownItemEmitsOpenDropdownMsg(t *testing.T) {
+	b := New([]Item{
+		{
+			Label:  "Find",
+			Hotkey: "alt+f",
+			SubItems: []SubItem{
+				{Label: "By Name", Key: 'n', Msg: dummyMsg{label: "byname"}},
+			},
+		},
+	})
+	b.Width = 80
+	ranges := b.ItemRanges()
+	mid := (ranges[0][0] + ranges[0][1]) / 2
+	cmd := b.HandleClick(mid)
+	if cmd == nil {
+		t.Fatalf("HandleClick(%d) returned nil", mid)
+	}
+	if _, ok := cmd().(OpenDropdownMsg); !ok {
+		t.Errorf("expected OpenDropdownMsg from click, got %T", cmd())
+	}
+}
+
+// A plain item (no sub-items) must continue to emit its own Msg — adding the
+// dropdown feature must not break the existing Openers/Bookmarks/Sort items.
+func TestHandleKey_PlainItemStillEmitsItsMsg(t *testing.T) {
+	b := New([]Item{
+		{Label: "Openers", Hotkey: "alt+o", Msg: dummyMsg{label: "openers"}},
+	})
+	cmd := b.HandleKey(tea.KeyPressMsg{Code: 'o', Mod: tea.ModAlt})
+	if cmd == nil {
+		t.Fatal("HandleKey returned nil")
+	}
+	dm, ok := cmd().(dummyMsg)
+	if !ok || dm.label != "openers" {
+		t.Errorf("expected dummyMsg{openers}, got %T %v", cmd(), cmd())
+	}
+}
+
+// The dropdown indicator visually signals that a menu item has sub-items.
+// Its presence is also a semantic marker for any future a11y work.
+func TestRender_DropdownItemShowsIndicator(t *testing.T) {
+	b := New([]Item{
+		{
+			Label:  "Find",
+			Hotkey: "alt+f",
+			SubItems: []SubItem{
+				{Label: "By Name", Key: 'n', Msg: dummyMsg{label: "byname"}},
+			},
+		},
+	})
+	b.Width = 80
+	rendered := b.Render()
+	if !containsSubstring(rendered, "▾") {
+		t.Errorf("dropdown item should show ▾ indicator; rendered: %q", rendered)
+	}
+}
+
 func TestRender_ContainsLabel(t *testing.T) {
 	b := makeBar("Openers")
 	b.Width = 80
