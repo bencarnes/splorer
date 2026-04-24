@@ -201,8 +201,9 @@ cd splorer
 # Download dependencies
 go mod download
 
-# Build the binary
-go build -o splorer .
+# Build the binary for the current OS / architecture
+go build -o splorer .    # on Linux/macOS
+go build -o splorer.exe .  # on Windows (or omit -o — `go build` picks the .exe suffix automatically)
 
 # Run
 ./splorer
@@ -214,6 +215,41 @@ your `$PATH`:
 ```sh
 go install github.com/bjcarnes/splorer@latest
 ```
+
+### Cross-compiling
+
+Go can produce a binary for any target OS from any host by setting the `GOOS`
+environment variable before `go build`. splorer supports Linux and Windows;
+`GOARCH=amd64` is the default on both and rarely needs to be set. The syntax
+for setting env vars depends on your shell:
+
+**bash / zsh** (one-shot, env var scoped to this command):
+
+```sh
+GOOS=linux   go build -o splorer      .   # Linux binary
+GOOS=windows go build -o splorer.exe  .   # Windows binary
+```
+
+**PowerShell** (env var persists in the session until cleared):
+
+```powershell
+$env:GOOS="linux";   go build -o splorer     .
+$env:GOOS="windows"; go build -o splorer.exe .
+Remove-Item Env:GOOS   # return to native builds
+```
+
+**Windows cmd.exe**:
+
+```bat
+set GOOS=linux   && go build -o splorer     .
+set GOOS=windows && go build -o splorer.exe .
+set GOOS=
+```
+
+The resulting binaries are self-contained — the `start` / `xdg-open`
+platform split is resolved at compile time via Go build tags in
+`internal/opener`, so the `linux` binary never references `start`, and
+vice versa.
 
 ## Leaving your shell in the last navigated directory
 
