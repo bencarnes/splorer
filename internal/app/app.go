@@ -180,6 +180,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyPressMsg:
+		// q and Esc quit the app, but only on the main screen — the overlay
+		// branches above return before we get here, so overlays keep their own
+		// Esc/typing semantics (e.g. Esc closes a dialog, "q" types into a
+		// search field).
+		switch msg.String() {
+		case "q", "esc":
+			return m, tea.Quit
+		}
 		if msg.String() == "ctrl+f" {
 			m.srch = search.New(m.filetree.CWD(), m.width, m.height-menuBarHeight)
 			m.searchOpen = true

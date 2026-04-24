@@ -12,9 +12,9 @@ entry name, size (or "dir"), and last-modified date.
 A menu bar at the top of the screen provides access to application features.
 It contains a **Find** menu for searching files by name, an **Openers** menu
 for configuring which program opens files of a given extension (overriding the
-system default, `xdg-open`), a **Bookmarks** menu for saving and navigating
-to frequently-used files and directories, and a **Sort** menu for changing the
-order in which directory entries are listed.
+system default — `xdg-open` on Linux, `start` on Windows), a **Bookmarks** menu
+for saving and navigating to frequently-used files and directories, and a
+**Sort** menu for changing the order in which directory entries are listed.
 
 ### Controls
 
@@ -31,7 +31,7 @@ order in which directory entries are listed.
 | Single click | Move cursor to row |
 | Double-click | Open file or enter directory |
 | Scroll wheel | Move cursor up / down |
-| `q` / `Ctrl+C` | Quit |
+| `q` / `Esc` | Quit |
 
 **Menu bar**
 
@@ -144,7 +144,9 @@ startup. The file is a plain JSON object mapping lowercase extensions
 ```
 
 When a file is opened, splorer looks up its extension. If a match is found the
-configured program is launched; otherwise `xdg-open` is used as the fallback.
+configured program is launched; otherwise the platform default is used as the
+fallback — `xdg-open` on Linux, the `start` shell builtin (via `cmd /c`) on
+Windows.
 
 ## Building
 
@@ -178,8 +180,9 @@ go test ./...
 ```
 
 The `internal/opener` package also has an integration test that requires a
-desktop environment with `xdg-open`. It is excluded from the default test run
-and must be opted into explicitly:
+desktop environment with the platform opener (`xdg-open` on Linux, `start` on
+Windows). It is excluded from the default test run and must be opted into
+explicitly:
 
 ```sh
 go test -tags integration ./internal/opener/
@@ -234,7 +237,9 @@ splorer/
     │   │                         additional items and future dropdown sub-menus.
     │   └── menubar_test.go
     ├── opener/
-    │   ├── opener.go             OpenFile() (xdg-open) and OpenFileWith(path, prog).
+    │   ├── opener.go             OpenFileWith(path, prog) — shared across platforms.
+    │   ├── opener_unix.go        OpenFile() via xdg-open          (build tag: !windows)
+    │   ├── opener_windows.go     OpenFile() via cmd /c start "" … (build tag: windows)
     │   ├── opener_test.go
     │   └── opener_integration_test.go   (build tag: integration)
     └── search/
@@ -259,7 +264,8 @@ splorer/
   When the user activates a file the filetree returns a `func() tea.Msg` command
   that yields `filetree.OpenFileMsg{Path: ...}`. `app.Update` receives this and
   decides which program to use (checking the associations map first, falling back
-  to `xdg-open`). This keeps file-opener logic out of the file browser.
+  to the platform default: `xdg-open` on Linux, `start` on Windows). This keeps
+  file-opener logic out of the file browser.
 
 - **Menu bar items carry a `tea.Msg` value, not a callback.**  
   Each `menubar.Item` stores a `Msg tea.Msg`. `HandleKey` / `HandleClick` wrap it

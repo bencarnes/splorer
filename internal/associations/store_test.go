@@ -6,12 +6,14 @@ import (
 	"testing"
 )
 
-// withConfigDir redirects the os.UserConfigDir resolution by temporarily
-// setting XDG_CONFIG_HOME to a temp path, then restores it on cleanup.
+// withConfigDir redirects os.UserConfigDir to a temp path. On Unix that is
+// controlled by XDG_CONFIG_HOME; on Windows by APPDATA. Setting both keeps
+// this helper cross-platform without a build-tag split.
 func withConfigDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("APPDATA", dir)
 	return dir
 }
 

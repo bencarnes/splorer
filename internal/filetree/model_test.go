@@ -3,6 +3,7 @@ package filetree
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -81,6 +82,10 @@ func TestLoadDir_Empty(t *testing.T) {
 }
 
 func TestLoadDir_PermissionDenied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix mode bits don't restrict access on Windows NTFS; " +
+			"an equivalent test would require manipulating ACLs")
+	}
 	root := setupTempDir(t, nil, nil)
 	restricted := filepath.Join(root, "noaccess")
 	if err := os.Mkdir(restricted, 0000); err != nil {
@@ -293,10 +298,25 @@ func TestNavigateUp(t *testing.T) {
 }
 
 func TestNavigateUp_AtRoot(t *testing.T) {
-	m := New("/")
+	root := filesystemRoot(t)
+	m := New(root)
 	m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
-	if m2.cwd != "/" {
-		t.Errorf("navigating up from / should stay at /, got %q", m2.cwd)
+	if m2.cwd != root {
+		t.Errorf("navigating up from %q should stay put, got %q", root, m2.cwd)
+	}
+}
+
+// filesystemRoot walks up from t.TempDir until filepath.Dir becomes a fixed
+// point, which is the real filesystem root ("/" on Unix, e.g. "C:\" on Windows).
+func filesystemRoot(t *testing.T) string {
+	t.Helper()
+	p := t.TempDir()
+	for {
+		parent := filepath.Dir(p)
+		if parent == p {
+			return p
+		}
+		p = parent
 	}
 }
 
