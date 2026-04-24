@@ -163,6 +163,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+	case tea.PasteMsg:
+		// Bracketed paste: insert the whole payload into the focused text
+		// field at the current cursor. Pastes outside stateInput are
+		// ignored — there's no editable field to receive them.
+		if m.state != stateInput {
+			return m, nil
+		}
+		return m.insertPasted(msg.Content), nil
+
 	case tea.KeyPressMsg:
 		switch m.state {
 		case stateInput:
@@ -536,6 +545,28 @@ func nextFocus(f focusField) focusField {
 
 func prevFocus(f focusField) focusField {
 	return nextFocus(f) // only two fields: next == prev
+}
+
+// insertPasted inserts pasted content into the currently focused text field
+// at the current cursor position. CR and LF are stripped so that multi-line
+// clipboard payloads collapse into the single-line field they're pasted
+// into (a pattern or extension list wouldn't meaningfully contain them).
+func (m Model) insertPasted(content string) Model {
+	cleaned := strings.ReplaceAll(content, "\r", "")
+	cleaned = strings.ReplaceAll(cleaned, "\n", "")
+	if cleaned == "" {
+		return m
+	}
+	switch m.focus {
+	case focusPattern:
+		m.pattern = insertTextAt(m.pattern, m.patternCur, cleaned)
+		m.patternCur += len([]rune(cleaned))
+	case focusExtensions:
+		m.extensions = insertTextAt(m.extensions, m.extCur, cleaned)
+		m.extCur += len([]rune(cleaned))
+	}
+	m.errMsg = ""
+	return m
 }
 
 // editField applies a single key event to a text input value and returns

@@ -85,6 +85,7 @@ displayed in the results list.
 | Input | Action |
 |---|---|
 | Typing in **Pattern** | Update the search pattern |
+| Paste (bracketed paste) | Insert clipboard content at the focused field's cursor; CR/LF are stripped |
 | `Tab` / `Shift+Tab` | Switch focus between the Pattern and Ext fields |
 | Typing in **Ext** | Comma-separated extension filter (e.g. `.go,.md`; empty = all files) |
 | `Alt+R` | Toggle regex mode on/off (always active, regardless of focus) |
