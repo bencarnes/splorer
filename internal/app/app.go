@@ -97,6 +97,13 @@ func (m Model) Init() tea.Cmd {
 	return nil
 }
 
+// CWD returns the directory the file tree is currently showing. Exposed so
+// main.go can read the final navigated directory after Program.Run returns
+// (used by the --cd-file flag).
+func (m Model) CWD() string {
+	return m.filetree.CWD()
+}
+
 // Update routes messages through the active component.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.searchOpen {

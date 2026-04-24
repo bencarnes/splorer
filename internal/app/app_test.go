@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -36,6 +37,34 @@ func asModel(t *testing.T, tm tea.Model) Model {
 		t.Fatalf("expected app.Model, got %T", tm)
 	}
 	return m
+}
+
+// CWD is read by main.go to write the final navigated directory to the
+// shell-wrapper's temp file on exit. It must reflect the filetree's current
+// directory both at construction time and after navigation.
+func TestModel_CWD(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	m := New(cwd)
+	if got := m.CWD(); got != cwd {
+		t.Errorf("initial CWD() = %q, want %q", got, cwd)
+	}
+
+	// After navigating to the parent dir, CWD must follow.
+	parent := filepath.Dir(cwd)
+	if parent == cwd {
+		t.Skip("already at filesystem root; no parent to navigate to")
+	}
+	ft, err := m.filetree.NavigateTo(parent)
+	if err != nil {
+		t.Fatalf("NavigateTo(%q): %v", parent, err)
+	}
+	m.filetree = ft
+	if got := m.CWD(); got != parent {
+		t.Errorf("after navigate CWD() = %q, want %q", got, parent)
+	}
 }
 
 func TestMainScreen_QQuits(t *testing.T) {

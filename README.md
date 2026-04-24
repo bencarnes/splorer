@@ -173,6 +173,43 @@ your `$PATH`:
 go install github.com/bjcarnes/splorer@latest
 ```
 
+## Leaving your shell in the last navigated directory
+
+By default splorer exits back to whichever directory your shell was in when
+you launched it — a child process can't change its parent shell's working
+directory on its own. To have your shell land in the directory you were
+viewing when you quit, install a small wrapper function for your shell.
+splorer ships the wrapper itself; no extra files to distribute.
+
+**PowerShell** — add this line to your `$PROFILE`:
+
+```powershell
+Invoke-Expression (& splorer.exe init powershell | Out-String)
+```
+
+**bash** — add this line to `~/.bashrc`:
+
+```sh
+eval "$(splorer init bash)"
+```
+
+**zsh** — add this line to `~/.zshrc`:
+
+```sh
+eval "$(splorer init zsh)"
+```
+
+Each shell's startup reads the wrapper back from `splorer init <shell>` and
+defines a `splorer` function that shadows the bare binary name. When you
+invoke `splorer`, the wrapper creates a temp file, runs the real binary with
+`--cd-file <temp>`, and after exit reads the final directory out of the temp
+file and `cd`s your shell there. Run `splorer init <shell>` on its own to see
+the exact wrapper.
+
+The `--cd-file <path>` flag is part of the public interface: splorer writes
+the directory you last navigated to into that file on exit. Shells or scripts
+other than the three above can use it directly.
+
 ## Running tests
 
 ```sh
@@ -195,9 +232,11 @@ splorer/
 ├── main.go
 └── internal/
     ├── app/
-    │   └── app.go                Root tea.Model. Owns all sub-components, routes
-    │                             messages, handles menu bar activation, dispatches
-    │                             file-open and directory-navigate events.
+    │   ├── app.go                Root tea.Model. Owns all sub-components, routes
+    │   │                         messages, handles menu bar activation, dispatches
+    │   │                         file-open and directory-navigate events. Exposes
+    │   │                         CWD() for --cd-file; intercepts q/Esc to quit.
+    │   └── app_test.go
     ├── associations/
     │   ├── store.go              Load() / Save() — reads and writes
     │   │                         ~/.config/splorer/openers.json.
@@ -242,6 +281,12 @@ splorer/
     │   ├── opener_windows.go     OpenFile() via cmd /c start "" … (build tag: windows)
     │   ├── opener_test.go
     │   └── opener_integration_test.go   (build tag: integration)
+    ├── shellinit/
+    │   ├── shellinit.go          Script(shell) returns the embedded wrapper
+    │   │                         function for bash, zsh, or powershell. Used by
+    │   │                         `splorer init <shell>` so the shell can cd into
+    │   │                         the final --cd-file directory on exit.
+    │   └── shellinit_test.go
     └── search/
         ├── model.go              Find / search view: text-input phase, background
         │                         recursive walk (filepath.WalkDir + context
@@ -325,6 +370,16 @@ splorer/
   Bubble Tea v2 has no built-in double-click. The filetree records the time and
   entry index of the last click; a second click on the same row within 500 ms
   triggers open/navigate.
+
+- **`--cd-file` hands the exit directory back to the parent shell.**  
+  A child process can't change its parent shell's cwd, so the usual "launcher
+  leaves you in the last directory" trick requires shell cooperation. splorer
+  takes the standard file-manager approach (same as `lf`, `nnn`, `yazi`): if
+  `--cd-file <path>` is set, `main` writes `app.Model.CWD()` to that file on
+  clean exit, and the shell wrapper function (emitted by `splorer init
+  <shell>`) reads the file after splorer returns and runs `cd` on the user's
+  behalf. The wrapper is shipped inside the binary as a string constant, so
+  distribution is still a single file.
 
 ## Adding features
 
