@@ -70,9 +70,10 @@ const (
 // Model is the search view component. It does not implement tea.Model
 // directly; the parent app.Model owns it and calls Update / Render.
 type Model struct {
-	rootDir string
-	state   viewState
-	closed  bool
+	rootDir    string
+	state      viewState
+	closed     bool
+	ignoreCase bool
 
 	// text input
 	input    string
@@ -98,12 +99,14 @@ type Model struct {
 }
 
 // New creates a Model ready to accept a search pattern for rootDir.
+// Case-insensitive matching is on by default.
 func New(rootDir string, width, height int) Model {
 	return Model{
-		rootDir: rootDir,
-		state:   stateInput,
-		width:   width,
-		height:  height,
+		rootDir:    rootDir,
+		state:      stateInput,
+		ignoreCase: true,
+		width:      width,
+		height:     height,
 	}
 }
 
@@ -126,8 +129,13 @@ func waitForBatch(ch <-chan resultBatchMsg) tea.Cmd {
 
 // runSearch walks rootDir looking for entries whose name matches pattern and
 // streams them to ch in batches of up to 100. It always closes ch on exit.
-func runSearch(ctx context.Context, rootDir, pattern string, sessionID uint64, ch chan<- resultBatchMsg) {
+func runSearch(ctx context.Context, rootDir, pattern string, ignoreCase bool, sessionID uint64, ch chan<- resultBatchMsg) {
 	defer close(ch)
+
+	matchPattern := pattern
+	if ignoreCase {
+		matchPattern = strings.ToLower(pattern)
+	}
 
 	var batch []Result
 
@@ -140,10 +148,18 @@ func runSearch(ctx context.Context, rootDir, pattern string, sessionID uint64, c
 		}
 
 		name := d.Name()
-		matched, matchErr := filepath.Match(pattern, name)
+		checkName := name
+		if ignoreCase {
+			checkName = strings.ToLower(name)
+		}
+		matched, matchErr := filepath.Match(matchPattern, checkName)
 		if matchErr != nil {
 			// Invalid wildcard syntax — fall back to exact name comparison.
-			matched = name == pattern
+			if ignoreCase {
+				matched = strings.EqualFold(name, pattern)
+			} else {
+				matched = name == pattern
+			}
 		}
 
 		if matched {
@@ -229,6 +245,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 func (m Model) updateInput(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch msg.String() {
+	case "alt+i":
+		m.ignoreCase = !m.ignoreCase
+		return m, nil
 	case "enter":
 		if strings.TrimSpace(m.input) == "" {
 			return m, nil
@@ -321,8 +340,9 @@ func (m Model) startSearch() (Model, tea.Cmd) {
 
 	pattern := strings.TrimSpace(m.input)
 	rootDir := m.rootDir
+	ignoreCase := m.ignoreCase
 
-	go runSearch(ctx, rootDir, pattern, id, ch)
+	go runSearch(ctx, rootDir, pattern, ignoreCase, id, ch)
 
 	return m, waitForBatch(ch)
 }
@@ -409,17 +429,24 @@ func (m Model) Render() string {
 	b.WriteString(headerStyle.Render(fmt.Sprintf(" Find in: %s", m.rootDir)))
 	b.WriteRune('\n')
 
-	// Line 1: pattern input (editable in stateInput, frozen otherwise).
+	// Line 1: pattern input + case-toggle indicator.
 	const inputLabel = " Pattern: "
+	toggleStr := fmt.Sprintf("  Alt+I Case: %s", caseLabel(m.ignoreCase))
+	toggleRendered := dimStyle.Render(toggleStr)
 	if m.state == stateInput {
-		fieldWidth := m.width - lipgloss.Width(inputLabel) - 1
+		fieldWidth := m.width - lipgloss.Width(inputLabel) - lipgloss.Width(toggleStr) - 1
 		if fieldWidth < 10 {
 			fieldWidth = 10
 		}
 		field := renderInputField(m.input, m.inputCur, fieldWidth, cursorStyle)
-		b.WriteString(inputLabel + field)
+		b.WriteString(inputLabel + field + " " + toggleRendered)
 	} else {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("%s%s", inputLabel, m.input)))
+		frozen := fmt.Sprintf("%s%s", inputLabel, m.input)
+		gap := m.width - lipgloss.Width(frozen) - lipgloss.Width(toggleStr)
+		if gap < 1 {
+			gap = 1
+		}
+		b.WriteString(dimStyle.Render(frozen) + strings.Repeat(" ", gap) + toggleRendered)
 	}
 	b.WriteRune('\n')
 
@@ -487,7 +514,7 @@ func (m Model) Render() string {
 	switch m.state {
 	case stateInput:
 		leftStr = headerStyle.Render(" Type a filename or wildcard pattern, then Enter")
-		rightStr = dimStyle.Render("Enter search  Esc/Backspace close")
+		rightStr = dimStyle.Render("Alt+I toggle case  Enter search  Esc/Backspace close")
 	case stateSearching:
 		leftStr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Yellow).Render(
 			fmt.Sprintf(" Searching… (%d found so far)", len(m.results)))
@@ -544,6 +571,13 @@ func renderInputField(value string, cursorPos int, fieldWidth int, cursorSt lipg
 func insertTextAt(s string, pos int, text string) string {
 	runes := []rune(s)
 	return string(runes[:pos]) + text + string(runes[pos:])
+}
+
+func caseLabel(ignoreCase bool) string {
+	if ignoreCase {
+		return "insensitive"
+	}
+	return "sensitive  "
 }
 
 // deleteRuneAt removes the rune immediately before pos and returns the updated

@@ -549,6 +549,72 @@ func TestSearch_DirectoriesIncluded(t *testing.T) {
 	}
 }
 
+// ── Case sensitivity ─────────────────────────────────────────────────────────
+
+func TestNew_DefaultCaseInsensitive(t *testing.T) {
+	m := New("/d", 80, 24)
+	if !m.ignoreCase {
+		t.Error("new model should default to case-insensitive")
+	}
+}
+
+func TestAltI_TogglesCase(t *testing.T) {
+	m := New("/d", 80, 24)
+	if !m.ignoreCase {
+		t.Fatal("precondition: should start case-insensitive")
+	}
+	m2, _ := m.Update(tea.KeyPressMsg{Code: 'i', Mod: tea.ModAlt})
+	if m2.ignoreCase {
+		t.Error("Alt+I should switch to case-sensitive")
+	}
+	m3, _ := m2.Update(tea.KeyPressMsg{Code: 'i', Mod: tea.ModAlt})
+	if !m3.ignoreCase {
+		t.Error("Alt+I again should switch back to case-insensitive")
+	}
+}
+
+func TestSearch_CaseInsensitiveMatchesUpperAndLower(t *testing.T) {
+	root := setupDir(t, nil, []string{"Hello.go", "world.go"})
+	m := New(root, 80, 24)
+	m.input = "hello.go" // lowercase pattern, uppercase filename
+	m.ignoreCase = true
+	m = drainSearch(t, m)
+
+	if len(m.results) != 1 {
+		t.Fatalf("expected 1 result, got %d: %v", len(m.results), m.results)
+	}
+	if m.results[0].RelPath != "Hello.go" {
+		t.Errorf("result = %q, want Hello.go", m.results[0].RelPath)
+	}
+}
+
+func TestSearch_CaseInsensitiveWildcard(t *testing.T) {
+	root := setupDir(t, nil, []string{"Main.Go", "util.go"})
+	m := New(root, 80, 24)
+	m.input = "*.go" // lowercase wildcard should match mixed-case filenames
+	m.ignoreCase = true
+	m = drainSearch(t, m)
+
+	if len(m.results) != 2 {
+		t.Fatalf("expected 2 results, got %d: %v", len(m.results), m.results)
+	}
+}
+
+func TestSearch_CaseSensitiveDoesNotMatchWrongCase(t *testing.T) {
+	root := setupDir(t, nil, []string{"Hello.go", "hello.go"})
+	m := New(root, 80, 24)
+	m.input = "hello.go"
+	m.ignoreCase = false
+	m = drainSearch(t, m)
+
+	if len(m.results) != 1 {
+		t.Fatalf("expected 1 result (exact case only), got %d: %v", len(m.results), m.results)
+	}
+	if m.results[0].RelPath != "hello.go" {
+		t.Errorf("result = %q, want hello.go", m.results[0].RelPath)
+	}
+}
+
 // ── Render smoke test ────────────────────────────────────────────────────────
 
 func TestRender_DoesNotPanic(t *testing.T) {

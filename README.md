@@ -65,6 +65,7 @@ for saving and navigating to frequently-used files and directories, and a
 | Input | Action |
 |---|---|
 | Typing | Update the search pattern |
+| `Alt+I` | Toggle case-insensitive matching (default: on) |
 | `Enter` | Start the search |
 | `←` / `→` | Move cursor within the pattern field |
 | `↑` / `k` | Move cursor up in results |
