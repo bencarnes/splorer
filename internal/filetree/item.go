@@ -3,6 +3,8 @@ package filetree
 import (
 	"fmt"
 	"io/fs"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -22,6 +24,37 @@ func (f FileEntry) Title() string {
 		return f.Name + "/"
 	}
 	return f.Name
+}
+
+// Icon returns an emoji representing the file type.
+func (f FileEntry) Icon() string {
+	if f.IsDir {
+		return "📁"
+	}
+	switch strings.ToLower(filepath.Ext(f.Name)) {
+	case ".go", ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h",
+		".rs", ".rb", ".php", ".swift", ".kt", ".cs", ".sh", ".bash", ".zsh", ".fish",
+		".lua", ".vim", ".el", ".clj", ".hs", ".ml", ".ex", ".exs":
+		return "💻"
+	case ".txt", ".md", ".rst", ".doc", ".docx", ".odt", ".rtf":
+		return "📝"
+	case ".png", ".jpg", ".jpeg", ".gif", ".svg", ".bmp", ".ico", ".webp", ".tiff", ".tif":
+		return "🖼"
+	case ".mp3", ".flac", ".ogg", ".wav", ".aac", ".m4a", ".opus":
+		return "🎵"
+	case ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v":
+		return "🎬"
+	case ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".zst":
+		return "📦"
+	case ".json", ".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg", ".env":
+		return "🔧"
+	case ".pdf":
+		return "📑"
+	case ".csv", ".sql", ".db", ".sqlite", ".sqlite3":
+		return "📊"
+	default:
+		return "📄"
+	}
 }
 
 // humanizeSize formats a byte count as a human-readable string.

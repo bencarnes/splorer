@@ -293,10 +293,12 @@ func (m Model) Render() string {
 	}
 
 	// Column widths: name takes the bulk; right column is "XXXXXX YYYY-MM-DD"
-	// = 6 (size) + 1 (space) + 10 (date) = 17, plus 2 for the cursor prefix.
+	// = 6 (size) + 1 (space) + 10 (date) = 17, plus 2 for the cursor prefix,
+	// plus 3 for the icon column (2-cell emoji + 1 space).
 	const cursorWidth = 2
+	const iconColWidth = 3
 	const rightWidth = 17
-	nameWidth := m.width - cursorWidth - rightWidth - 1
+	nameWidth := m.width - cursorWidth - iconColWidth - rightWidth - 1
 	if nameWidth < 8 {
 		nameWidth = 8
 	}
@@ -309,6 +311,8 @@ func (m Model) Render() string {
 		if i == m.cursor {
 			cursorStr = "▶ "
 		}
+
+		icon := e.Icon()
 
 		// Name (truncated to fit)
 		name := e.Title()
@@ -332,11 +336,11 @@ func (m Model) Render() string {
 		var line string
 		if i == m.cursor {
 			// Highlight entire row
-			line = selectedStyle.Render(cursorStr + namePadded + right)
+			line = selectedStyle.Render(cursorStr + icon + " " + namePadded + right)
 		} else if e.IsDir {
-			line = cursorStr + dirStyle.Render(namePadded) + dimStyle.Render(right)
+			line = cursorStr + dirStyle.Render(icon+" "+namePadded) + dimStyle.Render(right)
 		} else {
-			line = cursorStr + namePadded + dimStyle.Render(right)
+			line = cursorStr + icon + " " + namePadded + dimStyle.Render(right)
 		}
 
 		b.WriteString(line)
