@@ -50,8 +50,10 @@ func (m Model) CWD() string { return m.cwd }
 // CurrentSortOrder returns the active sort order.
 func (m Model) CurrentSortOrder() SortOrder { return m.sortOrder }
 
-// SetSortOrder applies a new sort order and re-sorts the current directory.
-func (m Model) SetSortOrder(so SortOrder) Model {
+// SetSortOrder applies a new sort order, re-sorts the current directory, and
+// returns a fresh watch command bound to the new order so stale watcher ticks
+// from the previous order are discarded.
+func (m Model) SetSortOrder(so SortOrder) (Model, tea.Cmd) {
 	m.sortOrder = so
 	entries, err := loadDir(m.cwd, so)
 	if err == nil {
@@ -59,7 +61,7 @@ func (m Model) SetSortOrder(so SortOrder) Model {
 		m.cursor = 0
 		m.offset = 0
 	}
-	return m
+	return m, m.WatchCmd()
 }
 
 // SelectedPath returns the path of the currently highlighted entry.
@@ -149,9 +151,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case "backspace", "left", "h":
 			return m.goUp()
 		case "~":
-			home, err := os.UserHomeDir()
-			if err == nil {
-				m, _ = m.navigateTo(home)
+			if home, err := os.UserHomeDir(); err == nil {
+				if newM, err2 := m.navigateTo(home); err2 == nil {
+					return newM, newM.WatchCmd()
+				}
 			}
 		}
 
@@ -177,6 +180,28 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case tea.MouseWheelDown:
 			m = m.moveCursor(1)
 		}
+
+	case DirChangedMsg:
+		// Discard ticks from a previous directory or a superseded sort order.
+		if msg.Dir != m.cwd || msg.SortOrder != m.sortOrder {
+			return m, nil
+		}
+		if msg.Entries != nil && !entriesEqual(m.entries, msg.Entries) {
+			m = m.applyEntryRefresh(msg.Entries)
+		}
+		return m, m.WatchCmd()
+
+	case DirGoneMsg:
+		if msg.Dir != m.cwd {
+			return m, nil
+		}
+		ancestor := nearestExistingAncestor(m.cwd)
+		newM, err := m.navigateTo(ancestor)
+		if err != nil {
+			m.err = "directory removed"
+			return m, nil
+		}
+		return newM, newM.WatchCmd()
 	}
 
 	return m, nil
@@ -215,7 +240,7 @@ func (m Model) activate() (Model, tea.Cmd) {
 			m.err = fmt.Sprintf("cannot open: %s", err)
 			return m, nil
 		}
-		return newM, nil
+		return newM, newM.WatchCmd()
 	}
 	path := entry.Path
 	return m, func() tea.Msg { return OpenFileMsg{Path: path} }
@@ -244,7 +269,7 @@ func (m Model) goUp() (Model, tea.Cmd) {
 			break
 		}
 	}
-	return newM, nil
+	return newM, newM.WatchCmd()
 }
 
 // listHeight is the number of visible entry rows (total height minus header and footer).

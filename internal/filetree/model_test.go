@@ -199,7 +199,7 @@ func TestSetSortOrder_ResortsCurrent(t *testing.T) {
 	}
 
 	m := New(root) // default SortByName: big.txt, small.txt
-	m2 := m.SetSortOrder(SortBySize)
+	m2, _ := m.SetSortOrder(SortBySize)
 
 	if m2.CurrentSortOrder() != SortBySize {
 		t.Errorf("CurrentSortOrder = %v, want SortBySize", m2.CurrentSortOrder())
@@ -390,6 +390,182 @@ func TestSelectedPath_EmptyDir(t *testing.T) {
 	got := m.SelectedPath()
 	if got != root {
 		t.Errorf("SelectedPath() on empty dir = %q, want %q (CWD)", got, root)
+	}
+}
+
+// ── Filesystem watcher ───────────────────────────────────────────────────────
+
+func TestDirChangedMsg_UpdatesEntries(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt"})
+	m := New(root)
+
+	if err := os.WriteFile(filepath.Join(root, "c.txt"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write c.txt: %v", err)
+	}
+	newEntries, err := loadDir(root, SortByName)
+	if err != nil {
+		t.Fatalf("loadDir: %v", err)
+	}
+
+	m2, cmd := m.Update(DirChangedMsg{Dir: root, SortOrder: SortByName, Entries: newEntries})
+	if len(m2.entries) != 3 {
+		t.Errorf("expected 3 entries after update, got %d", len(m2.entries))
+	}
+	if cmd == nil {
+		t.Error("DirChangedMsg should return a new watch command")
+	}
+}
+
+func TestDirChangedMsg_NoChangeNoUpdate(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt"})
+	m := New(root)
+	before := m.entries[0].Name
+
+	// Send identical entries — model should not change meaningfully.
+	same, _ := loadDir(root, SortByName)
+	m2, cmd := m.Update(DirChangedMsg{Dir: root, SortOrder: SortByName, Entries: same})
+	if m2.entries[0].Name != before {
+		t.Errorf("no-change DirChangedMsg should not alter entries")
+	}
+	if cmd == nil {
+		t.Error("DirChangedMsg should still return a watch command on no-change")
+	}
+}
+
+func TestDirChangedMsg_Stale_DifferentDir(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt"})
+	m := New(root)
+
+	m2, cmd := m.Update(DirChangedMsg{Dir: "/some/other/path", SortOrder: SortByName, Entries: []FileEntry{}})
+	if len(m2.entries) == 0 {
+		t.Error("stale DirChangedMsg (wrong dir) should not clear entries")
+	}
+	if cmd != nil {
+		t.Error("stale message should not reschedule the watcher")
+	}
+}
+
+func TestDirChangedMsg_Stale_OldSortOrder(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt"})
+	m := New(root) // default SortByName
+
+	m2, cmd := m.Update(DirChangedMsg{Dir: root, SortOrder: SortBySize, Entries: []FileEntry{}})
+	if len(m2.entries) == 0 {
+		t.Error("DirChangedMsg with wrong sort order should not clear entries")
+	}
+	if cmd != nil {
+		t.Error("stale sort-order message should not reschedule the watcher")
+	}
+}
+
+func TestDirChangedMsg_NilEntries_Reschedules(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt"})
+	m := New(root)
+	before := len(m.entries)
+
+	// nil Entries signals a transient read error.
+	m2, cmd := m.Update(DirChangedMsg{Dir: root, SortOrder: SortByName, Entries: nil})
+	if len(m2.entries) != before {
+		t.Error("nil-entries DirChangedMsg should not change entries")
+	}
+	if cmd == nil {
+		t.Error("nil-entries DirChangedMsg should still reschedule watcher")
+	}
+}
+
+func TestDirChangedMsg_PreservesCursor(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt"})
+	m := New(root)
+	m.cursor = 1 // b.txt
+
+	newEntries := []FileEntry{
+		{Name: "a.txt", Path: filepath.Join(root, "a.txt")},
+		{Name: "b.txt", Path: filepath.Join(root, "b.txt")},
+		{Name: "c.txt", Path: filepath.Join(root, "c.txt")},
+		{Name: "d.txt", Path: filepath.Join(root, "d.txt")},
+	}
+	m2, _ := m.Update(DirChangedMsg{Dir: root, SortOrder: SortByName, Entries: newEntries})
+	if m2.cursor != 1 {
+		t.Errorf("cursor should remain on b.txt (index 1), got %d", m2.cursor)
+	}
+}
+
+func TestDirChangedMsg_ClampsCursorWhenEntryGone(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt"})
+	m := New(root)
+	m.cursor = 2 // c.txt
+
+	newEntries := []FileEntry{
+		{Name: "a.txt", Path: filepath.Join(root, "a.txt")},
+	}
+	m2, _ := m.Update(DirChangedMsg{Dir: root, SortOrder: SortByName, Entries: newEntries})
+	if m2.cursor != 0 {
+		t.Errorf("cursor should clamp to 0 when selected entry is gone, got %d", m2.cursor)
+	}
+}
+
+func TestDirGoneMsg_NavigatesToParent(t *testing.T) {
+	root := setupTempDir(t, []string{"sub"}, nil)
+	subPath := filepath.Join(root, "sub")
+	m := New(subPath)
+
+	if err := os.Remove(subPath); err != nil {
+		t.Fatalf("remove sub: %v", err)
+	}
+
+	m2, cmd := m.Update(DirGoneMsg{Dir: subPath})
+	if m2.cwd != root {
+		t.Errorf("after DirGoneMsg cwd = %q, want %q", m2.cwd, root)
+	}
+	if cmd == nil {
+		t.Error("DirGoneMsg should return a new watch command")
+	}
+}
+
+func TestDirGoneMsg_Stale(t *testing.T) {
+	root := setupTempDir(t, nil, nil)
+	m := New(root)
+
+	m2, cmd := m.Update(DirGoneMsg{Dir: "/nonexistent/stale/path"})
+	if m2.cwd != root {
+		t.Errorf("stale DirGoneMsg changed cwd to %q", m2.cwd)
+	}
+	if cmd != nil {
+		t.Error("stale DirGoneMsg should not reschedule the watcher")
+	}
+}
+
+func TestNearestExistingAncestor(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "a")
+	b := filepath.Join(a, "b")
+	if err := os.MkdirAll(b, 0755); err != nil {
+		t.Fatalf("mkdirall: %v", err)
+	}
+
+	// Remove b only — nearest ancestor of b is a.
+	if err := os.Remove(b); err != nil {
+		t.Fatalf("remove b: %v", err)
+	}
+	if got := nearestExistingAncestor(b); got != a {
+		t.Errorf("nearestExistingAncestor(%q) = %q, want %q", b, got, a)
+	}
+
+	// Remove a as well — nearest ancestor of b is now root.
+	if err := os.Remove(a); err != nil {
+		t.Fatalf("remove a: %v", err)
+	}
+	if got := nearestExistingAncestor(b); got != root {
+		t.Errorf("nearestExistingAncestor(%q) after removing a = %q, want %q", b, got, root)
+	}
+}
+
+func TestSetSortOrder_ReturnsWatchCmd(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt"})
+	m := New(root)
+	_, cmd := m.SetSortOrder(SortBySize)
+	if cmd == nil {
+		t.Error("SetSortOrder should return a non-nil watch command")
 	}
 }
 

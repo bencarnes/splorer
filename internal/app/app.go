@@ -109,9 +109,9 @@ func New(cwd string) Model {
 	}
 }
 
-// Init satisfies tea.Model; no initial commands are needed.
+// Init satisfies tea.Model; starts the filesystem watcher for the initial dir.
 func (m Model) Init() tea.Cmd {
-	return nil
+	return m.filetree.WatchCmd()
 }
 
 // CWD returns the directory the file tree is currently showing. Exposed so
@@ -123,6 +123,16 @@ func (m Model) CWD() string {
 
 // Update routes messages through the active component.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Filesystem watcher messages are forwarded to the file tree before any
+	// overlay branching so the listing stays current regardless of which
+	// overlay is open.
+	switch msg.(type) {
+	case filetree.DirChangedMsg, filetree.DirGoneMsg:
+		ft, cmd := m.filetree.Update(msg)
+		m.filetree = ft
+		return m, cmd
+	}
+
 	// Dropdown takes priority over other overlays — it only opens from the
 	// main screen, so there's no ambiguity with deeper overlays.
 	if m.dropdownOpen {
@@ -190,8 +200,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case bookmarks.NavigateDirMsg:
-		if ft, err := m.filetree.NavigateTo(msg.Path); err == nil {
+		ft, err := m.filetree.NavigateTo(msg.Path)
+		if err == nil {
 			m.filetree = ft
+			return m, m.filetree.WatchCmd()
 		}
 		return m, nil
 
@@ -309,8 +321,10 @@ func (m Model) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case search.NavigateDirMsg:
 		m.searchOpen = false
-		if ft, err := m.filetree.NavigateTo(msg.Path); err == nil {
+		ft, err := m.filetree.NavigateTo(msg.Path)
+		if err == nil {
 			m.filetree = ft
+			return m, m.filetree.WatchCmd()
 		}
 		return m, nil
 
@@ -466,7 +480,9 @@ func (m Model) updateSortDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if d.IsClosed() {
 		m.sortDlgOpen = false
 		if d.IsSaved() {
-			m.filetree = m.filetree.SetSortOrder(d.Chosen())
+			ft, watchCmd := m.filetree.SetSortOrder(d.Chosen())
+			m.filetree = ft
+			return m, watchCmd
 		}
 	} else {
 		m.sortDlg = d

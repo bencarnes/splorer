@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/bjcarnes/splorer/internal/filetree"
 	"github.com/bjcarnes/splorer/internal/menubar"
 )
 
@@ -190,6 +191,43 @@ func TestDropdown_EscClosesAndDoesNotQuit(t *testing.T) {
 	}
 	// Re-dispatching the Esc-returned command (if any) should not open a
 	// search view; dropdown closure is silent.
+}
+
+// TestWatcherMsg_PassesThroughSearchOverlay verifies that DirChangedMsg
+// reaches the file tree even while the search overlay is open.
+func TestWatcherMsg_PassesThroughSearchOverlay(t *testing.T) {
+	m := newModel(t)
+
+	// The test directory must have at least one entry so we can observe it
+	// being cleared by the simulated watcher update.
+	if m.filetree.SelectedPath() == m.CWD() {
+		t.Skip("test directory is empty; cannot verify entry update through overlay")
+	}
+
+	// Open the search overlay.
+	tm, _ := m.Update(openSearchByNameMsg{})
+	m = asModel(t, tm)
+	if !m.searchOpen {
+		t.Fatal("search overlay did not open")
+	}
+
+	// Simulate the watcher reporting an empty directory.
+	msg := filetree.DirChangedMsg{
+		Dir:       m.CWD(),
+		SortOrder: m.filetree.CurrentSortOrder(),
+		Entries:   []filetree.FileEntry{},
+	}
+	tm2, _ := m.Update(msg)
+	m = asModel(t, tm2)
+
+	// An empty directory returns CWD as the selected path.
+	if got := m.filetree.SelectedPath(); got != m.CWD() {
+		t.Errorf("SelectedPath after empty DirChangedMsg = %q, want CWD %q", got, m.CWD())
+	}
+	// The overlay must remain open — the watcher message must not close it.
+	if !m.searchOpen {
+		t.Error("search overlay should remain open after a watcher message")
+	}
 }
 
 // openFindDropdown is a test helper that drives a model to the

@@ -9,6 +9,10 @@ of files and directories. Directories are shown first, sorted
 case-insensitively, followed by files in the same order. Each row shows the
 entry name, size (or "dir"), and last-modified date.
 
+The file list refreshes automatically every second when the contents of the
+current directory change. If the directory itself is deleted, splorer navigates
+to the nearest ancestor that still exists.
+
 A menu bar at the top of the screen provides access to application features.
 It contains a **Find** menu for searching files by name, an **Openers** menu
 for configuring which program opens files of a given extension (overriding the
@@ -504,6 +508,19 @@ splorer/
   never has to think about "where am I typing". Tab is reserved for
   switching between the two text fields — there's no way around needing
   some focus cycling with multiple text inputs.
+
+- **The file tree is watched with a polling loop, not OS events.**
+  `filetree.WatchCmd()` returns a one-shot Bubble Tea command that sleeps one
+  second, reads the current directory, and emits `DirChangedMsg` (contents
+  changed or transient error) or `DirGoneMsg` (directory removed). The handler
+  in `filetree.Update` re-queues a fresh `WatchCmd` on every tick, forming a
+  self-perpetuating chain. The sort order and directory path are baked into each
+  tick so stale messages from a previous navigation or sort change are silently
+  discarded instead of overwriting the current view. `app.Model.Init` starts the
+  initial chain; every navigation that changes the CWD returns a new `WatchCmd`
+  to replace it. `DirChangedMsg` and `DirGoneMsg` are caught in `app.Update`
+  before the overlay-routing branches so the listing stays current even while a
+  search or dialog is open.
 
 - **`--cd-file` hands the exit directory back to the parent shell.**  
   A child process can't change its parent shell's cwd, so the usual "launcher
