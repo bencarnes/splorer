@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -9,9 +10,12 @@ import (
 
 	"github.com/bjcarnes/splorer/internal/associations"
 	"github.com/bjcarnes/splorer/internal/bookmarks"
+	"github.com/bjcarnes/splorer/internal/confirmdialog"
 	"github.com/bjcarnes/splorer/internal/contentsearch"
+	"github.com/bjcarnes/splorer/internal/fileops"
 	"github.com/bjcarnes/splorer/internal/filetree"
 	"github.com/bjcarnes/splorer/internal/finddropdown"
+	"github.com/bjcarnes/splorer/internal/helppage"
 	"github.com/bjcarnes/splorer/internal/menubar"
 	"github.com/bjcarnes/splorer/internal/opener"
 	"github.com/bjcarnes/splorer/internal/search"
@@ -36,6 +40,36 @@ type openBookmarksMsg struct{}
 
 // openSortMsg is dispatched when the user activates the Sort menu item.
 type openSortMsg struct{}
+
+// openHelpMsg is dispatched when the user activates the Help menu item.
+type openHelpMsg struct{}
+
+// manipulateOp identifies which file-manipulation operation the user is
+// asking for. Each one is gated by the confirmation dialog before any
+// filesystem change is made.
+type manipulateOp int
+
+const (
+	manipulateNone manipulateOp = iota
+	manipulateDelete
+	manipulateCopy
+	manipulateCut
+	manipulatePaste
+)
+
+// clipboardMode is the kind of pending paste held in the in-memory clipboard.
+type clipboardMode int
+
+const (
+	clipNone clipboardMode = iota
+	clipCopy
+	clipCut
+)
+
+// manipulateMsg is dispatched (from menu sub-items or direct keys) to start
+// a manipulation operation. The op is settled here; the operation only runs
+// after the confirmation dialog returns OK.
+type manipulateMsg struct{ op manipulateOp }
 
 // Model is the root Bubble Tea model. It owns the menu bar, the file tree,
 // and (when open) overlays for search, openers, bookmarks, or create-bookmark.
@@ -62,6 +96,17 @@ type Model struct {
 
 	sortDlg     sortdialog.Dialog
 	sortDlgOpen bool
+
+	help     helppage.Page
+	helpOpen bool
+
+	confirmDlg     confirmdialog.Dialog
+	confirmDlgOpen bool
+	pendingOp      manipulateOp
+	pendingPaths   []string
+
+	clipboard     []string
+	clipboardMode clipboardMode
 
 	assocs       map[string]string
 	bookmarkList []bookmarks.Bookmark
@@ -98,6 +143,21 @@ func New(cwd string) Model {
 			Label:  "Sort",
 			Hotkey: "alt+s",
 			Msg:    openSortMsg{},
+		},
+		{
+			Label:  "Manipulate",
+			Hotkey: "alt+m",
+			SubItems: []menubar.SubItem{
+				{Label: "Delete", Key: 'd', Msg: manipulateMsg{op: manipulateDelete}},
+				{Label: "Copy", Key: 'c', Msg: manipulateMsg{op: manipulateCopy}},
+				{Label: "Cut", Key: 'x', Msg: manipulateMsg{op: manipulateCut}},
+				{Label: "Paste", Key: 'v', Msg: manipulateMsg{op: manipulatePaste}},
+			},
+		},
+		{
+			Label:  "Help",
+			Hotkey: "alt+h",
+			Msg:    openHelpMsg{},
 		},
 	})
 
@@ -157,6 +217,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.sortDlgOpen {
 		return m.updateSortDialog(msg)
 	}
+	if m.helpOpen {
+		return m.updateHelp(msg)
+	}
+	if m.confirmDlgOpen {
+		return m.updateConfirmDialog(msg)
+	}
 
 	switch msg := msg.(type) {
 
@@ -198,6 +264,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sortDlg = sortdialog.New(m.filetree.CurrentSortOrder())
 		m.sortDlgOpen = true
 		return m, nil
+
+	case openHelpMsg:
+		m.help = helppage.New()
+		m.helpOpen = true
+		return m, nil
+
+	case manipulateMsg:
+		return m.startManipulate(msg.op), nil
 
 	case bookmarks.NavigateDirMsg:
 		ft, err := m.filetree.NavigateTo(msg.Path)
@@ -263,6 +337,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.createBmark = bookmarks.NewCreateDialog(m.filetree.SelectedPath())
 			m.createOpen = true
 			return m, nil
+		}
+		// Direct manipulation shortcuts mirror the Manipulate sub-menu so the
+		// menu doesn't have to be open for the common ops.
+		switch msg.String() {
+		case "delete":
+			return m.startManipulate(manipulateDelete), nil
+		case "ctrl+c":
+			return m.startManipulate(manipulateCopy), nil
+		case "ctrl+x":
+			return m.startManipulate(manipulateCut), nil
+		case "ctrl+v":
+			return m.startManipulate(manipulatePaste), nil
 		}
 		if cmd := m.menu.HandleKey(msg); cmd != nil {
 			return m, cmd
@@ -462,6 +548,172 @@ func (m Model) updateCreateBmark(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// updateHelp routes events to the open help page. Any key press or click
+// closes it.
+func (m Model) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = ws.Width
+		m.height = ws.Height
+		m.menu.Width = ws.Width
+		ft, _ := m.filetree.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.filetree = ft
+		return m, nil
+	}
+
+	h, cmd := m.help.Update(msg)
+	if h.IsClosed() {
+		m.helpOpen = false
+	} else {
+		m.help = h
+	}
+	return m, cmd
+}
+
+// startManipulate captures the targets for op and opens the confirmation
+// dialog. Paste targets the clipboard (and aborts if it's empty); the others
+// target the filetree's current multi-selection (or the cursor's row if no
+// multi-selection exists). For all four ops, no filesystem change happens
+// here — execution is deferred until updateConfirmDialog sees the OK press.
+func (m Model) startManipulate(op manipulateOp) Model {
+	var targets []string
+	if op == manipulatePaste {
+		if len(m.clipboard) == 0 || m.clipboardMode == clipNone {
+			return m
+		}
+		targets = append(targets, m.clipboard...)
+	} else {
+		targets = m.filetree.SelectionPaths()
+		if len(targets) == 0 {
+			return m
+		}
+	}
+
+	m.pendingOp = op
+	m.pendingPaths = targets
+	m.confirmDlg = confirmdialog.New(opTitle(op), opSummary(op, targets, m.filetree.CWD()))
+	m.confirmDlgOpen = true
+	return m
+}
+
+// updateConfirmDialog routes events to the open confirmation dialog. On OK,
+// it executes the pending operation, clears the multi-selection, and (for
+// delete/paste) lets the watcher refresh the listing.
+func (m Model) updateConfirmDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = ws.Width
+		m.height = ws.Height
+		m.menu.Width = ws.Width
+		ft, _ := m.filetree.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.filetree = ft
+		return m, nil
+	}
+
+	d, cmd := m.confirmDlg.Update(msg)
+	if !d.IsClosed() {
+		m.confirmDlg = d
+		return m, cmd
+	}
+
+	m.confirmDlgOpen = false
+	if !d.IsConfirmed() {
+		m.pendingOp = manipulateNone
+		m.pendingPaths = nil
+		return m, cmd
+	}
+
+	cmd2 := m.executePendingOp()
+	m.pendingOp = manipulateNone
+	m.pendingPaths = nil
+	if cmd2 != nil {
+		return m, cmd2
+	}
+	return m, cmd
+}
+
+// executePendingOp runs the file-manipulation operation captured in m.pendingOp.
+// Errors are surfaced through the filetree's status bar via SetError.
+func (m *Model) executePendingOp() tea.Cmd {
+	switch m.pendingOp {
+	case manipulateDelete:
+		if err := fileops.DeleteAll(m.pendingPaths); err != nil {
+			m.filetree = m.filetree.SetError(err.Error())
+		}
+		m.filetree = m.filetree.ClearSelection()
+
+	case manipulateCopy:
+		m.clipboard = append([]string(nil), m.pendingPaths...)
+		m.clipboardMode = clipCopy
+		m.filetree = m.filetree.ClearSelection()
+
+	case manipulateCut:
+		m.clipboard = append([]string(nil), m.pendingPaths...)
+		m.clipboardMode = clipCut
+		m.filetree = m.filetree.ClearSelection()
+
+	case manipulatePaste:
+		dest := m.filetree.CWD()
+		var err error
+		switch m.clipboardMode {
+		case clipCopy:
+			err = fileops.CopyAll(m.pendingPaths, dest)
+		case clipCut:
+			err = fileops.MoveAll(m.pendingPaths, dest)
+			if err == nil {
+				// Cut is consumed; copy mode survives so the user can paste again.
+				m.clipboard = nil
+				m.clipboardMode = clipNone
+			}
+		}
+		if err != nil {
+			m.filetree = m.filetree.SetError(err.Error())
+		}
+		m.filetree = m.filetree.ClearSelection()
+	}
+	return nil
+}
+
+// opTitle is the bold red title shown in the confirmation dialog header.
+func opTitle(op manipulateOp) string {
+	switch op {
+	case manipulateDelete:
+		return "Delete"
+	case manipulateCopy:
+		return "Copy"
+	case manipulateCut:
+		return "Cut"
+	case manipulatePaste:
+		return "Paste"
+	}
+	return ""
+}
+
+// opSummary is the verb-phrase plugged into the "Are you sure you want to X?"
+// prompt. It states the count of items and (for paste) the destination dir.
+func opSummary(op manipulateOp, paths []string, cwd string) string {
+	n := len(paths)
+	noun := "items"
+	if n == 1 {
+		noun = "item"
+	}
+	switch op {
+	case manipulateDelete:
+		return fmt.Sprintf("delete %d %s", n, noun)
+	case manipulateCopy:
+		return fmt.Sprintf("copy %d %s to the clipboard", n, noun)
+	case manipulateCut:
+		return fmt.Sprintf("cut %d %s to the clipboard", n, noun)
+	case manipulatePaste:
+		return fmt.Sprintf("paste %d %s into %s", n, noun, cwd)
+	}
+	return ""
+}
+
 // updateSortDialog routes events to the sort picker and applies a new sort order on save.
 func (m Model) updateSortDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
@@ -519,6 +771,10 @@ func (m Model) View() tea.View {
 		body = m.createBmark.Render(m.width, m.height-menuBarHeight)
 	case m.sortDlgOpen:
 		body = m.sortDlg.Render(m.width, m.height-menuBarHeight)
+	case m.confirmDlgOpen:
+		body = m.confirmDlg.Render(m.width, m.height-menuBarHeight)
+	case m.helpOpen:
+		body = m.help.Render(m.width, m.height-menuBarHeight)
 	default:
 		body = m.filetree.Render()
 	}

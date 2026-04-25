@@ -1,0 +1,9 @@
+- [ ] Implement file manipulation operations. Add multi-selection to facilitate the file manipulation operations. The user should be able to mult-select with the mouse via click, then shift-click to select a range, then ctrl-click to add or remove individual items from the range. Click would reset the range, single-selecting the clicked item. There should be a menu item at the top titled "Manipulate", reachable via alt-m. That menu item should have sub-menu items for del, copy, cut, and paste. Keys del, ctrl-c, ctrl-x, and ctrl-v should have the same effect. Before the manipulation operation is finalized, the user should be prompted "Are you sure you want to `<summary of manipulation operation>`? OK, Cancel". The manipulation operation should ONLY happen if the user selects OK.
+  - [ ] multi-selected
+  - [ ] del
+  - [ ] copy
+  - [ ] cut
+  - [ ] paste
+  - [ ] confirmation dialog
+  - [ ] update tests as needed.
+  - [ ] update README.md as needed.

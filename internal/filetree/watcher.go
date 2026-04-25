@@ -46,13 +46,30 @@ func watchDirOnce(dir string, so SortOrder) tea.Cmd {
 }
 
 // applyEntryRefresh replaces m.entries, preserving the cursor on the same
-// entry name when possible and clamping it otherwise.
+// entry name when possible and clamping it otherwise. Multi-selection entries
+// that no longer exist are pruned silently.
 func (m Model) applyEntryRefresh(newEntries []FileEntry) Model {
 	var prevName string
 	if m.cursor < len(m.entries) {
 		prevName = m.entries[m.cursor].Name
 	}
 	m.entries = newEntries
+
+	// Drop selections for entries that have disappeared.
+	if len(m.selected) > 0 {
+		alive := make(map[string]bool, len(m.selected))
+		for _, e := range newEntries {
+			if m.selected[e.Path] {
+				alive[e.Path] = true
+			}
+		}
+		if len(alive) == 0 {
+			m.selected = nil
+		} else {
+			m.selected = alive
+		}
+	}
+
 	if prevName != "" {
 		for i, e := range newEntries {
 			if e.Name == prevName {

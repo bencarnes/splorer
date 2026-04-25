@@ -35,6 +35,15 @@ type Model struct {
 	lastClick  time.Time
 	lastClickY int // entry index of last click (for double-click detection)
 	err        string
+
+	// selected is the set of selected entry paths. Selections survive across
+	// directory refreshes for entries that still exist; entries that disappear
+	// are dropped silently.
+	selected map[string]bool
+	// anchorPath is the path of the most recent single-click. Shift-click
+	// extends the selection from the anchor to the clicked row inclusive. An
+	// empty string means there is no anchor (e.g. after a directory change).
+	anchorPath string
 }
 
 // New creates a Model starting in cwd with sensible defaults.
@@ -73,6 +82,46 @@ func (m Model) SelectedPath() string {
 	return m.entries[m.cursor].Path
 }
 
+// IsSelected reports whether path is in the multi-selection set.
+func (m Model) IsSelected(path string) bool {
+	return m.selected[path]
+}
+
+// SelectionPaths returns the paths the user has multi-selected, ordered to
+// match the current entry listing. If no multi-selection exists, the cursor's
+// current entry is returned as a single-item slice (so callers can treat
+// "no explicit selection" as "operate on the highlighted entry"). Returns
+// empty for an empty directory.
+func (m Model) SelectionPaths() []string {
+	if len(m.selected) > 0 {
+		out := make([]string, 0, len(m.selected))
+		for _, e := range m.entries {
+			if m.selected[e.Path] {
+				out = append(out, e.Path)
+			}
+		}
+		return out
+	}
+	if len(m.entries) == 0 {
+		return nil
+	}
+	return []string{m.entries[m.cursor].Path}
+}
+
+// ClearSelection drops all multi-selected paths and the range anchor.
+func (m Model) ClearSelection() Model {
+	m.selected = nil
+	m.anchorPath = ""
+	return m
+}
+
+// SetError surfaces an error string in the file tree's status bar. The next
+// keypress clears it (matching how navigation errors are handled).
+func (m Model) SetError(msg string) Model {
+	m.err = msg
+	return m
+}
+
 // NavigateTo navigates the model to path, returning the updated model. Returns
 // an error if the directory cannot be read; in that case the model is unchanged.
 func (m Model) NavigateTo(path string) (Model, error) {
@@ -92,7 +141,113 @@ func (m Model) navigateTo(path string) (Model, error) {
 	m.cursor = 0
 	m.offset = 0
 	m.err = ""
+	m.selected = nil
+	m.anchorPath = ""
 	return m, nil
+}
+
+// applyClickSelection updates the multi-selection state for a click on idx
+// with the given modifier keys. Plain click resets to single-select; Shift
+// extends from the anchor; Ctrl toggles idx in/out of the set.
+func (m Model) applyClickSelection(idx int, mod tea.KeyMod) Model {
+	if idx < 0 || idx >= len(m.entries) {
+		return m
+	}
+	clickedPath := m.entries[idx].Path
+
+	switch {
+	case mod.Contains(tea.ModShift):
+		anchorIdx := m.indexOf(m.anchorPath)
+		if anchorIdx < 0 {
+			anchorIdx = idx
+			m.anchorPath = clickedPath
+		}
+		lo, hi := anchorIdx, idx
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		m.selected = make(map[string]bool, hi-lo+1)
+		for i := lo; i <= hi; i++ {
+			m.selected[m.entries[i].Path] = true
+		}
+
+	case mod.Contains(tea.ModCtrl):
+		if m.selected == nil {
+			m.selected = make(map[string]bool)
+		}
+		if m.selected[clickedPath] {
+			delete(m.selected, clickedPath)
+		} else {
+			m.selected[clickedPath] = true
+		}
+		m.anchorPath = clickedPath
+
+	default:
+		m.selected = map[string]bool{clickedPath: true}
+		m.anchorPath = clickedPath
+	}
+
+	return m
+}
+
+// indexOf returns the index of the entry with the given path, or -1.
+func (m Model) indexOf(path string) int {
+	if path == "" {
+		return -1
+	}
+	for i, e := range m.entries {
+		if e.Path == path {
+			return i
+		}
+	}
+	return -1
+}
+
+// toggleCursorSelection adds or removes the cursor's row from the
+// multi-selection set. The anchor is set to the cursor so a subsequent
+// shift-extend has a sensible starting point.
+func (m Model) toggleCursorSelection() Model {
+	if len(m.entries) == 0 {
+		return m
+	}
+	p := m.entries[m.cursor].Path
+	if m.selected == nil {
+		m.selected = make(map[string]bool)
+	}
+	if m.selected[p] {
+		delete(m.selected, p)
+	} else {
+		m.selected[p] = true
+	}
+	m.anchorPath = p
+	return m
+}
+
+// extendSelectionBy moves the cursor by delta and rewrites the multi-selection
+// to span the anchor (the row where extension started) and the new cursor
+// position inclusive. If no anchor exists yet, the current cursor row becomes
+// the anchor before the move.
+func (m Model) extendSelectionBy(delta int) Model {
+	if len(m.entries) == 0 {
+		return m
+	}
+	if m.indexOf(m.anchorPath) < 0 {
+		m.anchorPath = m.entries[m.cursor].Path
+	}
+	m = m.moveCursor(delta)
+	anchorIdx := m.indexOf(m.anchorPath)
+	if anchorIdx < 0 {
+		anchorIdx = m.cursor
+	}
+	lo, hi := anchorIdx, m.cursor
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	m.selected = make(map[string]bool, hi-lo+1)
+	for i := lo; i <= hi; i++ {
+		m.selected[m.entries[i].Path] = true
+	}
+	return m
 }
 
 // loadDir reads the directory at path and returns sorted entries. Directories
@@ -146,6 +301,19 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m = m.moveCursor(-m.listHeight())
 		case "pgdown":
 			m = m.moveCursor(m.listHeight())
+		// Keyboard fallbacks for multi-selection — most terminals swallow
+		// Shift+click for their own text selection, so these provide a
+		// reliable way to build a multi-selection without the mouse.
+		case "shift+up":
+			m = m.extendSelectionBy(-1)
+		case "shift+down":
+			m = m.extendSelectionBy(1)
+		case "shift+pgup":
+			m = m.extendSelectionBy(-m.listHeight())
+		case "shift+pgdown":
+			m = m.extendSelectionBy(m.listHeight())
+		case " ", "space":
+			m = m.toggleCursorSelection()
 		case "enter", "right", "l":
 			return m.activate()
 		case "backspace", "left", "h":
@@ -167,6 +335,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			if idx >= 0 && idx < len(m.entries) {
 				m.lastClickY = idx
 				m.cursor = idx
+				m = m.applyClickSelection(idx, msg.Mod)
 				if isDouble {
 					return m.activate()
 				}
@@ -289,6 +458,7 @@ func (m Model) Render() string {
 
 	dirStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Blue)
 	selectedStyle := lipgloss.NewStyle().Bold(true).Reverse(true)
+	multiSelStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Yellow)
 	dimStyle := lipgloss.NewStyle().Faint(true)
 	headerStyle := lipgloss.NewStyle().Bold(true)
 	sepStyle := lipgloss.NewStyle().Faint(true)
@@ -319,11 +489,13 @@ func (m Model) Render() string {
 
 	// Column widths: name takes the bulk; right column is "XXXXXX YYYY-MM-DD"
 	// = 6 (size) + 1 (space) + 10 (date) = 17, plus 2 for the cursor prefix,
-	// plus 3 for the icon column (2-cell emoji + 1 space).
+	// plus 2 for the selection-mark column (●/space + space), plus 3 for the
+	// icon column (2-cell emoji + 1 space).
 	const cursorWidth = 2
+	const selMarkWidth = 2
 	const iconColWidth = 3
 	const rightWidth = 17
-	nameWidth := m.width - cursorWidth - iconColWidth - rightWidth - 1
+	nameWidth := m.width - cursorWidth - selMarkWidth - iconColWidth - rightWidth - 1
 	if nameWidth < 8 {
 		nameWidth = 8
 	}
@@ -335,6 +507,13 @@ func (m Model) Render() string {
 		cursorStr := "  "
 		if i == m.cursor {
 			cursorStr = "▶ "
+		}
+
+		// Selection-mark indicator (independent of cursor).
+		isMulti := m.selected[e.Path]
+		selMarkPlain := "  "
+		if isMulti {
+			selMarkPlain = "● "
 		}
 
 		icon := e.Icon()
@@ -360,12 +539,19 @@ func (m Model) Render() string {
 
 		var line string
 		if i == m.cursor {
-			// Highlight entire row
-			line = selectedStyle.Render(cursorStr + icon + " " + namePadded + right)
-		} else if e.IsDir {
-			line = cursorStr + dirStyle.Render(icon+" "+namePadded) + dimStyle.Render(right)
+			// Highlight entire row. The selection mark is drawn unstyled
+			// (besides the row-wide reverse) so it stays visible.
+			line = selectedStyle.Render(cursorStr + selMarkPlain + icon + " " + namePadded + right)
 		} else {
-			line = cursorStr + icon + " " + namePadded + dimStyle.Render(right)
+			selRendered := selMarkPlain
+			if isMulti {
+				selRendered = multiSelStyle.Render("●") + " "
+			}
+			if e.IsDir {
+				line = cursorStr + selRendered + dirStyle.Render(icon+" "+namePadded) + dimStyle.Render(right)
+			} else {
+				line = cursorStr + selRendered + icon + " " + namePadded + dimStyle.Render(right)
+			}
 		}
 
 		b.WriteString(line)

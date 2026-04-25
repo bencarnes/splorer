@@ -569,6 +569,237 @@ func TestSetSortOrder_ReturnsWatchCmd(t *testing.T) {
 	}
 }
 
+// ── Multi-selection ──────────────────────────────────────────────────────────
+
+func TestSelectionPaths_DefaultsToCursor(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt"})
+	m := New(root)
+
+	got := m.SelectionPaths()
+	if len(got) != 1 || got[0] != filepath.Join(root, "a.txt") {
+		t.Errorf("SelectionPaths with no multi-selection should be [cursor], got %v", got)
+	}
+}
+
+func TestSelectionPaths_EmptyDir(t *testing.T) {
+	root := setupTempDir(t, nil, nil)
+	m := New(root)
+	if got := m.SelectionPaths(); len(got) != 0 {
+		t.Errorf("SelectionPaths on empty dir should be empty, got %v", got)
+	}
+}
+
+func TestPlainClick_SingleSelects(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt"})
+	m := New(root)
+	m.height = 24
+	m.width = 80
+
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 1, Button: tea.MouseLeft})
+	if !m.IsSelected(filepath.Join(root, "b.txt")) {
+		t.Errorf("click should select b.txt")
+	}
+	if m.IsSelected(filepath.Join(root, "a.txt")) || m.IsSelected(filepath.Join(root, "c.txt")) {
+		t.Errorf("plain click should single-select; selection set = %v", m.selected)
+	}
+}
+
+func TestShiftClick_RangeSelectsFromAnchor(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt", "d.txt"})
+	m := New(root)
+	m.height = 24
+	m.width = 80
+
+	// Anchor on a.txt, then shift-click on c.txt — selection should span a..c.
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 0, Button: tea.MouseLeft})
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 2, Button: tea.MouseLeft, Mod: tea.ModShift})
+
+	want := []string{
+		filepath.Join(root, "a.txt"),
+		filepath.Join(root, "b.txt"),
+		filepath.Join(root, "c.txt"),
+	}
+	got := m.SelectionPaths()
+	if len(got) != len(want) {
+		t.Fatalf("range select length = %d, want %d (got %v)", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("range[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+func TestCtrlClick_TogglesIndividualEntries(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt"})
+	m := New(root)
+	m.height = 24
+	m.width = 80
+
+	// Select a.txt, then ctrl-click c.txt → both selected.
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 0, Button: tea.MouseLeft})
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 2, Button: tea.MouseLeft, Mod: tea.ModCtrl})
+	if !m.IsSelected(filepath.Join(root, "a.txt")) || !m.IsSelected(filepath.Join(root, "c.txt")) {
+		t.Errorf("ctrl-click should add to selection: %v", m.selected)
+	}
+	if m.IsSelected(filepath.Join(root, "b.txt")) {
+		t.Errorf("b.txt should not be selected: %v", m.selected)
+	}
+
+	// Ctrl-click c.txt again → toggles off.
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 2, Button: tea.MouseLeft, Mod: tea.ModCtrl})
+	if m.IsSelected(filepath.Join(root, "c.txt")) {
+		t.Errorf("second ctrl-click should remove c.txt; selection = %v", m.selected)
+	}
+}
+
+func TestPlainClick_ResetsRangeAfterCtrlClicks(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt"})
+	m := New(root)
+	m.height = 24
+	m.width = 80
+
+	// Build up a multi-selection, then plain-click should reset to that one row.
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 0, Button: tea.MouseLeft})
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 2, Button: tea.MouseLeft, Mod: tea.ModCtrl})
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 1, Button: tea.MouseLeft})
+
+	got := m.SelectionPaths()
+	if len(got) != 1 || got[0] != filepath.Join(root, "b.txt") {
+		t.Errorf("plain click should reset to single selection [b.txt], got %v", got)
+	}
+}
+
+func TestNavigateInto_ClearsSelection(t *testing.T) {
+	root := setupTempDir(t, []string{"sub"}, []string{"a.txt"})
+	m := New(root)
+	m.height = 24
+	m.width = 80
+
+	// Select something, then navigate into the subdir — selection should reset.
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 0, Button: tea.MouseLeft})
+	if len(m.selected) == 0 {
+		t.Fatal("precondition: should have a selection")
+	}
+	for i, e := range m.entries {
+		if e.Name == "sub" {
+			m.cursor = i
+			break
+		}
+	}
+	m, _ = m.activate()
+	if len(m.selected) != 0 {
+		t.Errorf("selection should clear on navigate; got %v", m.selected)
+	}
+}
+
+func TestApplyEntryRefresh_DropsMissingSelections(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt"})
+	m := New(root)
+	m.height = 24
+	m.width = 80
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 0, Button: tea.MouseLeft})
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 1, Button: tea.MouseLeft, Mod: tea.ModCtrl})
+	if len(m.selected) != 2 {
+		t.Fatalf("precondition: 2 selections, got %d", len(m.selected))
+	}
+
+	// Simulate watcher: only a.txt remains.
+	newEntries := []FileEntry{
+		{Name: "a.txt", Path: filepath.Join(root, "a.txt")},
+	}
+	m, _ = m.Update(DirChangedMsg{Dir: root, SortOrder: m.sortOrder, Entries: newEntries})
+
+	if len(m.selected) != 1 {
+		t.Errorf("selection should prune missing entries; got %v", m.selected)
+	}
+	if !m.IsSelected(filepath.Join(root, "a.txt")) {
+		t.Errorf("a.txt should remain selected")
+	}
+}
+
+func TestSpace_TogglesCursorSelection(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt"})
+	m := New(root)
+	m.height = 24
+	m.width = 80
+
+	// Toggle cursor (a.txt) on, then move to b.txt and toggle on.
+	m, _ = m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+
+	if !m.IsSelected(filepath.Join(root, "a.txt")) || !m.IsSelected(filepath.Join(root, "b.txt")) {
+		t.Errorf("space should toggle cursor row; selected = %v", m.selected)
+	}
+	if m.IsSelected(filepath.Join(root, "c.txt")) {
+		t.Errorf("c.txt should not be selected: %v", m.selected)
+	}
+
+	// Toggle a.txt off again by moving back and pressing space.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	if m.IsSelected(filepath.Join(root, "a.txt")) {
+		t.Errorf("second space should toggle a.txt off; selected = %v", m.selected)
+	}
+}
+
+func TestShiftDown_ExtendsSelection(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt", "d.txt"})
+	m := New(root)
+	m.height = 24
+	m.width = 80
+
+	// Cursor starts on a.txt; shift+down twice should select a..c inclusive.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift})
+
+	want := []string{
+		filepath.Join(root, "a.txt"),
+		filepath.Join(root, "b.txt"),
+		filepath.Join(root, "c.txt"),
+	}
+	got := m.SelectionPaths()
+	if len(got) != len(want) {
+		t.Fatalf("shift+down extension length = %d, want %d (got %v)", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("extend[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+func TestShiftUp_ContractsSelection(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt", "c.txt"})
+	m := New(root)
+	m.height = 24
+	m.width = 80
+
+	// Move cursor down, then shift+down to extend, then shift+up to contract.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})           // cursor → b
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModShift}) // anchor=b, extend to c
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModShift})   // contract back to b
+
+	got := m.SelectionPaths()
+	if len(got) != 1 || got[0] != filepath.Join(root, "b.txt") {
+		t.Errorf("contract should leave just anchor selected; got %v", got)
+	}
+}
+
+func TestClearSelection(t *testing.T) {
+	root := setupTempDir(t, nil, []string{"a.txt", "b.txt"})
+	m := New(root)
+	m.height = 24
+	m.width = 80
+	m, _ = m.Update(tea.MouseClickMsg{Y: headerHeight + 0, Button: tea.MouseLeft})
+	m = m.ClearSelection()
+	if len(m.selected) != 0 || m.anchorPath != "" {
+		t.Errorf("ClearSelection should drop set and anchor; selected=%v anchor=%q",
+			m.selected, m.anchorPath)
+	}
+}
+
 func TestDoubleClickDetection_TooSlow(t *testing.T) {
 	root := setupTempDir(t, []string{"child"}, nil)
 	m := New(root)

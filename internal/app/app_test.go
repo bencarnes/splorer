@@ -241,3 +241,253 @@ func openFindDropdown(t *testing.T, m Model) Model {
 	}
 	return m
 }
+
+// ── Manipulate (delete / copy / cut / paste) ─────────────────────────────────
+
+// newModelIn constructs a root app Model rooted in the given directory.
+func newModelIn(t *testing.T, cwd string) Model {
+	t.Helper()
+	return New(cwd)
+}
+
+// makeFile writes `content` to a file under root and returns the path.
+func makeFile(t *testing.T, root, name, content string) string {
+	t.Helper()
+	p := filepath.Join(root, name)
+	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+	return p
+}
+
+// confirmYes drives the open confirmation dialog to OK.
+func confirmYes(t *testing.T, m Model) Model {
+	t.Helper()
+	if !m.confirmDlgOpen {
+		t.Fatalf("expected confirm dialog open")
+	}
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	return asModel(t, tm)
+}
+
+// confirmNo drives the open confirmation dialog to Cancel.
+func confirmNo(t *testing.T, m Model) Model {
+	t.Helper()
+	if !m.confirmDlgOpen {
+		t.Fatalf("expected confirm dialog open")
+	}
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	return asModel(t, tm)
+}
+
+func TestDelete_ConfirmDialogOpens(t *testing.T) {
+	root := t.TempDir()
+	makeFile(t, root, "a.txt", "x")
+	m := newModelIn(t, root)
+
+	tm, _ := m.Update(manipulateMsg{op: manipulateDelete})
+	m = asModel(t, tm)
+	if !m.confirmDlgOpen {
+		t.Fatal("delete should open the confirm dialog")
+	}
+	if m.pendingOp != manipulateDelete {
+		t.Errorf("pendingOp = %v, want manipulateDelete", m.pendingOp)
+	}
+}
+
+func TestDelete_RemovesFileOnConfirm(t *testing.T) {
+	root := t.TempDir()
+	target := makeFile(t, root, "a.txt", "x")
+	m := newModelIn(t, root)
+
+	tm, _ := m.Update(manipulateMsg{op: manipulateDelete})
+	m = asModel(t, tm)
+	m = confirmYes(t, m)
+
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("a.txt should be removed; stat err = %v", err)
+	}
+	if m.confirmDlgOpen {
+		t.Error("confirm dialog should be closed after Y")
+	}
+	if m.pendingOp != manipulateNone {
+		t.Errorf("pendingOp should reset; got %v", m.pendingOp)
+	}
+}
+
+func TestDelete_CancelLeavesFileAlone(t *testing.T) {
+	root := t.TempDir()
+	target := makeFile(t, root, "a.txt", "x")
+	m := newModelIn(t, root)
+
+	tm, _ := m.Update(manipulateMsg{op: manipulateDelete})
+	m = asModel(t, tm)
+	m = confirmNo(t, m)
+
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("a.txt should still exist after cancel: %v", err)
+	}
+}
+
+func TestCopyPaste_DuplicatesFileIntoCwd(t *testing.T) {
+	srcRoot := t.TempDir()
+	src := makeFile(t, srcRoot, "a.txt", "alpha")
+	destRoot := t.TempDir()
+
+	m := newModelIn(t, srcRoot)
+
+	// Select a.txt explicitly via ctrl-click so the test doesn't depend on
+	// the cursor's default position.
+	tm, _ := m.Update(tea.MouseClickMsg{Y: 2, Button: tea.MouseLeft, Mod: tea.ModCtrl})
+	m = asModel(t, tm)
+	if len(m.filetree.SelectionPaths()) != 1 {
+		t.Fatalf("expected 1 selected, got %d", len(m.filetree.SelectionPaths()))
+	}
+
+	tm, _ = m.Update(manipulateMsg{op: manipulateCopy})
+	m = asModel(t, tm)
+	m = confirmYes(t, m)
+	if len(m.clipboard) != 1 || m.clipboard[0] != src {
+		t.Errorf("clipboard = %v, want [%s]", m.clipboard, src)
+	}
+	if m.clipboardMode != clipCopy {
+		t.Errorf("clipboardMode = %v, want clipCopy", m.clipboardMode)
+	}
+
+	// Navigate to dest dir.
+	ft, err := m.filetree.NavigateTo(destRoot)
+	if err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	m.filetree = ft
+
+	tm, _ = m.Update(manipulateMsg{op: manipulatePaste})
+	m = asModel(t, tm)
+	m = confirmYes(t, m)
+
+	// File should be in both source and destination.
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("source missing after copy+paste: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(destRoot, "a.txt")); err != nil || string(got) != "alpha" {
+		t.Errorf("dest copy = %q, %v", got, err)
+	}
+	// Copy mode persists so the user can paste again.
+	if m.clipboardMode != clipCopy || len(m.clipboard) != 1 {
+		t.Errorf("clipboard should persist after copy-paste: %v / mode=%v", m.clipboard, m.clipboardMode)
+	}
+}
+
+func TestCutPaste_MovesFileAndClearsClipboard(t *testing.T) {
+	srcRoot := t.TempDir()
+	src := makeFile(t, srcRoot, "a.txt", "alpha")
+	destRoot := t.TempDir()
+
+	m := newModelIn(t, srcRoot)
+	tm, _ := m.Update(tea.MouseClickMsg{Y: 2, Button: tea.MouseLeft, Mod: tea.ModCtrl})
+	m = asModel(t, tm)
+
+	tm, _ = m.Update(manipulateMsg{op: manipulateCut})
+	m = asModel(t, tm)
+	m = confirmYes(t, m)
+
+	ft, err := m.filetree.NavigateTo(destRoot)
+	if err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	m.filetree = ft
+
+	tm, _ = m.Update(manipulateMsg{op: manipulatePaste})
+	m = asModel(t, tm)
+	m = confirmYes(t, m)
+
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source should be moved; stat err = %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(destRoot, "a.txt")); err != nil || string(got) != "alpha" {
+		t.Errorf("dest after cut+paste = %q, %v", got, err)
+	}
+	if len(m.clipboard) != 0 || m.clipboardMode != clipNone {
+		t.Errorf("cut+paste should clear clipboard; got %v mode=%v", m.clipboard, m.clipboardMode)
+	}
+}
+
+func TestPaste_NoClipboard_DoesNothing(t *testing.T) {
+	root := t.TempDir()
+	makeFile(t, root, "a.txt", "x")
+	m := newModelIn(t, root)
+	tm, _ := m.Update(manipulateMsg{op: manipulatePaste})
+	m = asModel(t, tm)
+	if m.confirmDlgOpen {
+		t.Error("paste with empty clipboard must not open the confirm dialog")
+	}
+}
+
+func TestDeleteKey_OpensConfirmDialog(t *testing.T) {
+	root := t.TempDir()
+	makeFile(t, root, "a.txt", "x")
+	m := newModelIn(t, root)
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDelete})
+	m = asModel(t, tm)
+	if !m.confirmDlgOpen || m.pendingOp != manipulateDelete {
+		t.Errorf("Delete key should start a delete op; confirmOpen=%v pendingOp=%v",
+			m.confirmDlgOpen, m.pendingOp)
+	}
+}
+
+func TestCtrlC_StartsCopy(t *testing.T) {
+	root := t.TempDir()
+	makeFile(t, root, "a.txt", "x")
+	m := newModelIn(t, root)
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = asModel(t, tm)
+	if !m.confirmDlgOpen || m.pendingOp != manipulateCopy {
+		t.Errorf("Ctrl+C should start copy; confirmOpen=%v pendingOp=%v",
+			m.confirmDlgOpen, m.pendingOp)
+	}
+}
+
+func TestAltH_OpensHelpPage(t *testing.T) {
+	m := newModel(t)
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'h', Mod: tea.ModAlt})
+	if cmd == nil {
+		t.Fatal("Alt+H produced no command")
+	}
+	tm, _ := m.Update(cmd())
+	m = asModel(t, tm)
+	if !m.helpOpen {
+		t.Error("Alt+H should open the help page")
+	}
+}
+
+func TestHelpPage_AnyKeyCloses(t *testing.T) {
+	m := newModel(t)
+	tm, _ := m.Update(openHelpMsg{})
+	m = asModel(t, tm)
+	if !m.helpOpen {
+		t.Fatal("help did not open")
+	}
+	// q must not quit while the help page owns the screen — it should close
+	// the page instead and keep the app alive.
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	m = asModel(t, tm)
+	if isQuitCmd(cmd) {
+		t.Error("q should not quit while help is open")
+	}
+	if m.helpOpen {
+		t.Error("any key should close the help page")
+	}
+}
+
+func TestAltM_OpensManipulateDropdown(t *testing.T) {
+	m := newModel(t)
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt})
+	if cmd == nil {
+		t.Fatal("Alt+M produced no command")
+	}
+	tm, _ := m.Update(cmd())
+	m = asModel(t, tm)
+	if !m.dropdownOpen {
+		t.Error("Alt+M should open the Manipulate dropdown")
+	}
+}

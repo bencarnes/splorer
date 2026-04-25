@@ -17,8 +17,12 @@ A menu bar at the top of the screen provides access to application features.
 It contains a **Find** menu for searching files by name, an **Openers** menu
 for configuring which program opens files of a given extension (overriding the
 system default — `xdg-open` on Linux, `start` on Windows), a **Bookmarks** menu
-for saving and navigating to frequently-used files and directories, and a
-**Sort** menu for changing the order in which directory entries are listed.
+for saving and navigating to frequently-used files and directories, a
+**Sort** menu for changing the order in which directory entries are listed,
+a **Manipulate** menu for deleting, copying, cutting, and pasting files or
+directories (with multi-selection via mouse), and a **Help** menu that
+documents how multi-selection works (the only set of bindings in the app
+that isn't immediately self-evident).
 
 ### Controls
 
@@ -32,9 +36,18 @@ for saving and navigating to frequently-used files and directories, and a
 | `Enter` / `→` / `l` | Open file or enter directory |
 | `Backspace` / `←` / `h` | Go up to parent directory |
 | `~` | Jump to home directory |
-| Single click | Move cursor to row |
+| Single click | Move cursor and reset multi-selection to that row |
+| `Shift`+click | Extend multi-selection from the anchor (last single-click) to the clicked row (terminal-dependent — see note below) |
+| `Ctrl`+click | Toggle the clicked row in/out of the multi-selection (terminal-dependent — see note below) |
+| `Space` | Toggle the cursor's row in/out of the multi-selection |
+| `Shift`+`↑` / `Shift`+`↓` | Move cursor and extend selection from the anchor |
+| `Shift`+`PgUp` / `Shift`+`PgDn` | Page-extend the selection from the anchor |
 | Double-click | Open file or enter directory |
 | Scroll wheel | Move cursor up / down |
+| `Delete` | Delete the selection (with confirmation) |
+| `Ctrl+C` | Copy the selection to the clipboard (with confirmation) |
+| `Ctrl+X` | Cut the selection to the clipboard (with confirmation) |
+| `Ctrl+V` | Paste the clipboard into the current directory (with confirmation) |
 | `q` / `Esc` | Quit |
 
 **Menu bar**
@@ -47,7 +60,9 @@ for saving and navigating to frequently-used files and directories, and a
 | `Alt+O` | Open the Openers dialog |
 | `Alt+B` | Open the Bookmarks page |
 | `Alt+S` | Open the Sort dialog |
-| Click on a menu label | Open that menu's dialog (Find opens the dropdown) |
+| `Alt+M` | Open the Manipulate dropdown menu |
+| `Alt+H` | Open the Help page (multi-selection reference) |
+| Click on a menu label | Open that menu's dialog (Find / Manipulate open dropdowns) |
 
 **Find dropdown** (opened with `Alt+F` or by clicking `Find ▾`)
 
@@ -167,6 +182,77 @@ Directories always appear before files regardless of sort order.
 | `y` / `Y` | Confirm deletion |
 | `n` / `N` | Cancel |
 | `Esc` | Cancel |
+
+**Help page** (opened with `Alt+H` or by clicking `Help`)
+
+A single full-screen reference for multi-selection — every other binding in
+the app is documented in its view's footer hint. Press any key (or click
+anywhere) to close.
+
+**Manipulate dropdown** (opened with `Alt+M` or by clicking `Manipulate ▾`)
+
+| Input | Action |
+|---|---|
+| `↑` / `k` · `↓` / `j` | Move selection |
+| `d` | Activate **Delete** |
+| `c` | Activate **Copy** |
+| `x` | Activate **Cut** |
+| `v` | Activate **Paste** |
+| `Enter` / `→` / `l` | Activate the highlighted option |
+| Single click on an option | Activate it |
+| `Esc` | Close the dropdown |
+
+Each option opens a confirmation dialog that summarises the action; the
+filesystem change only happens after pressing **OK** (or `y`). The same
+operations can be triggered directly from the file tree without opening the
+menu using `Delete`, `Ctrl+C`, `Ctrl+X`, and `Ctrl+V`.
+
+**Confirmation dialog** (gates every Manipulate operation)
+
+| Input | Action |
+|---|---|
+| `←` / `h` | Move focus to **OK** |
+| `→` / `l` | Move focus to **Cancel** |
+| `Tab` | Cycle focus between OK and Cancel |
+| `Enter` | Activate the focused button |
+| `y` / `Y` | Confirm immediately |
+| `n` / `N` / `Esc` | Cancel immediately |
+
+The dialog defaults the focus to **Cancel** so an accidental `Enter` does not
+delete or overwrite anything.
+
+### Manipulate
+
+Multi-selection lives entirely in memory — quitting splorer discards it.
+Click selects a single row (resetting any previous selection); `Shift`+click
+extends the selection from the anchor (the last single-click) to the
+clicked row inclusive; `Ctrl`+click toggles a single row in or out of the
+selection. Selected rows display a yellow `●` in the indicator column.
+Navigating into or out of a directory clears the selection, since paths in
+the new directory are unrelated to the previous list.
+
+> **Terminal note:** most terminals (xterm, gnome-terminal, iTerm2,
+> Windows Terminal, …) reserve `Shift`+click and `Ctrl`+click for their
+> own text-selection / link-opening, so those events never reach splorer.
+> If shift-click does nothing for you, use the keyboard fallbacks: `Space`
+> toggles the cursor row, and `Shift`+`↑`/`↓` (or `Shift`+`PgUp`/`PgDn`)
+> moves the cursor while extending the selection from the anchor. These
+> work in every terminal regardless of mouse-modifier passthrough.
+
+The clipboard is also in-memory. **Copy** and **Cut** snapshot the current
+selection into the clipboard (or the cursor's row if there is no
+multi-selection) and remember which mode is active. **Paste** writes the
+clipboard into whichever directory the file tree is currently showing:
+
+- `Copy` + `Paste`: the originals stay where they are; the clipboard remains
+  loaded so you can paste again into another directory.
+- `Cut` + `Paste`: the originals are moved (rename across the same
+  filesystem, or copy + remove across mount points). The clipboard is then
+  cleared.
+
+If a destination already contains an entry with the same basename, the paste
+aborts with an error rather than overwriting silently. Errors surface in the
+file tree's status bar; the next keypress clears the message.
 
 ### Bookmarks
 
@@ -343,12 +429,31 @@ splorer/
     │   │                         Size / Type), arrow-key navigation, Enter confirms,
     │   │                         Esc cancels. Chosen() returns filetree.SortOrder.
     │   └── dialog_test.go
+    ├── confirmdialog/
+    │   ├── dialog.go             Generic OK/Cancel confirmation overlay. Used by
+    │   │                         every Manipulate operation. Defaults focus to
+    │   │                         Cancel; supports y/n, Esc, arrow navigation.
+    │   └── dialog_test.go
+    ├── helppage/
+    │   └── helppage.go           Full-screen Help overlay. Currently scoped to
+    │                             multi-selection (mouse + keyboard fallbacks)
+    │                             since other bindings are self-evident. Any
+    │                             key or click closes it.
+    ├── fileops/
+    │   ├── fileops.go            Filesystem primitives behind Manipulate:
+    │   │                         DeleteAll (RemoveAll), CopyAll (recursive copy
+    │   │                         with collision check), MoveAll (rename, falling
+    │   │                         back to copy + remove across devices).
+    │   └── fileops_test.go
     ├── filetree/
     │   ├── item.go               FileEntry struct and humanizeSize helper.
     │   ├── item_test.go
     │   ├── model.go              File-tree component: directory loading, cursor/
-    │   │                         scroll, keyboard and mouse handling, rendering.
-    │   │                         Emits OpenFileMsg instead of calling opener directly.
+    │   │                         scroll, multi-selection (Shift/Ctrl click),
+    │   │                         keyboard and mouse handling, rendering. Emits
+    │   │                         OpenFileMsg instead of calling opener directly.
+    │   │                         Exposes SelectionPaths/ClearSelection/SetError
+    │   │                         for the Manipulate flow in app.
     │   ├── model_test.go
     │   └── sort.go               SortOrder type, Label(), AllSortOrders, sortGroup().
     │                             Dirs always precede files; order within each group
@@ -522,6 +627,27 @@ splorer/
   to replace it. `DirChangedMsg` and `DirGoneMsg` are caught in `app.Update`
   before the overlay-routing branches so the listing stays current even while a
   search or dialog is open.
+
+- **Manipulate is gated by a generic confirmation dialog.**  
+  Delete / Copy / Cut / Paste each go through `confirmdialog.Dialog` before
+  any filesystem change is made. `app.startManipulate` snapshots the targets
+  (the filetree's multi-selection, falling back to the cursor's row, or the
+  clipboard for paste) and stashes them in `pendingPaths`. The confirmation
+  dialog defaults to **Cancel** so an accidental `Enter` is harmless. On OK
+  the captured paths are passed to `fileops` and the multi-selection is
+  cleared; `Cut` + `Paste` also empties the clipboard, while `Copy` + `Paste`
+  leaves it loaded for repeated pasting. Errors are surfaced via
+  `filetree.SetError` and clear on the next keypress, matching how
+  navigation errors are handled.
+
+- **Multi-selection is mouse-only and tracked by path.**  
+  `filetree.Model` keeps a `selected map[string]bool` keyed by absolute path
+  so the watcher's directory refresh can prune entries that disappear
+  without invalidating the rest of the set. The shift-click anchor is also
+  stored as a path so it survives reorderings; if the anchor entry is gone
+  by the time of the next shift-click, the click itself becomes the new
+  anchor. Navigating into or out of a directory clears both the set and the
+  anchor since paths in the new directory are unrelated.
 
 - **`--cd-file` hands the exit directory back to the parent shell.**  
   A child process can't change its parent shell's cwd, so the usual "launcher
