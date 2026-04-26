@@ -20,7 +20,8 @@ system default — `xdg-open` on Linux, `start` on Windows), a **Bookmarks** men
 for saving and navigating to frequently-used files and directories, a
 **Sort** menu for changing the order in which directory entries are listed,
 a **Manipulate** menu for deleting, copying, cutting, and pasting files or
-directories (with multi-selection via mouse), and a **Help** menu that
+directories (with multi-selection via mouse), a **Tree** menu that opens a
+read-only recursive tree of the current directory, and a **Help** menu that
 documents how multi-selection works (the only set of bindings in the app
 that isn't immediately self-evident).
 
@@ -61,6 +62,7 @@ that isn't immediately self-evident).
 | `Alt+B` | Open the Bookmarks page |
 | `Alt+S` | Open the Sort dialog |
 | `Alt+M` | Open the Manipulate dropdown menu |
+| `Alt+T` | Open the Tree view (read-only recursive listing) |
 | `Alt+H` | Open the Help page (multi-selection reference) |
 | Click on a menu label | Open that menu's dialog (Find / Manipulate open dropdowns) |
 
@@ -182,6 +184,31 @@ Directories always appear before files regardless of sort order.
 | `y` / `Y` | Confirm deletion |
 | `n` / `N` | Cancel |
 | `Esc` | Cancel |
+
+**Tree view** (opened with `Alt+T` or by clicking `Tree`)
+
+A read-only, fully-expanded recursive listing of the current directory.
+Directories are shown first at every level (case-insensitively sorted),
+then files. Each row carries the same icon used in the file tree (📁 for
+directories, plus the per-extension file icons) and is connected to its
+parent and siblings with `├─` / `└─` branches and `│` continuation lines,
+so the structure is readable at a glance. The view caps the number of
+rows at **2000** so the app stays responsive on large trees; if the cap
+is reached, a yellow warning is shown in the footer that not all entries
+are displayed. The tree view intentionally does not support directory
+navigation, multi-selection, or any manipulation operations — the only
+action it offers is opening a file, which uses the same configured opener
+as the file tree.
+
+| Input | Action |
+|---|---|
+| `↑` / `k` · `↓` / `j` | Move cursor |
+| `PgUp` / `PgDn` | Scroll one page |
+| `Home` / `End` | Jump to first / last row |
+| `Enter` / `→` / `l` · Double-click | Open the file at the cursor (no-op on a directory row) |
+| Single click | Move cursor to that row |
+| Scroll wheel | Move cursor up / down |
+| `Esc` / `Backspace` / `q` | Close the tree view |
 
 **Help page** (opened with `Alt+H` or by clicking `Help`)
 
@@ -439,6 +466,15 @@ splorer/
     │                             multi-selection (mouse + keyboard fallbacks)
     │                             since other bindings are self-evident. Any
     │                             key or click closes it.
+    ├── treeview/
+    │   ├── treeview.go           Read-only recursive tree view of a directory.
+    │   │                         Walks dirs-first/files-second per level, caps
+    │   │                         at 2000 rows, draws ├─ / └─ / │ tree lines and
+    │   │                         per-extension icons (reused from filetree),
+    │   │                         and emits filetree.OpenFileMsg when a file
+    │   │                         row is activated. No directory navigation,
+    │   │                         selection, or manipulation.
+    │   └── treeview_test.go
     ├── fileops/
     │   ├── fileops.go            Filesystem primitives behind Manipulate:
     │   │                         DeleteAll (RemoveAll), CopyAll (recursive copy

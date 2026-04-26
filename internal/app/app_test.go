@@ -447,6 +447,36 @@ func TestCtrlC_StartsCopy(t *testing.T) {
 	}
 }
 
+func TestAltT_OpensTreeView(t *testing.T) {
+	m := newModel(t)
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModAlt})
+	if cmd == nil {
+		t.Fatal("Alt+T produced no command")
+	}
+	tm, _ := m.Update(cmd())
+	m = asModel(t, tm)
+	if !m.treeOpen {
+		t.Error("Alt+T should open the tree view")
+	}
+}
+
+func TestTreeView_EscClosesAndDoesNotQuit(t *testing.T) {
+	m := newModel(t)
+	tm, _ := m.Update(openTreeMsg{})
+	m = asModel(t, tm)
+	if !m.treeOpen {
+		t.Fatal("tree did not open")
+	}
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = asModel(t, tm)
+	if isQuitCmd(cmd) {
+		t.Error("Esc should not quit while the tree view is open")
+	}
+	if m.treeOpen {
+		t.Error("Esc should close the tree view")
+	}
+}
+
 func TestAltH_OpensHelpPage(t *testing.T) {
 	m := newModel(t)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 'h', Mod: tea.ModAlt})

@@ -20,6 +20,7 @@ import (
 	"github.com/bjcarnes/splorer/internal/opener"
 	"github.com/bjcarnes/splorer/internal/search"
 	"github.com/bjcarnes/splorer/internal/sortdialog"
+	"github.com/bjcarnes/splorer/internal/treeview"
 )
 
 // menuBarHeight is the number of terminal lines the menu bar occupies.
@@ -43,6 +44,9 @@ type openSortMsg struct{}
 
 // openHelpMsg is dispatched when the user activates the Help menu item.
 type openHelpMsg struct{}
+
+// openTreeMsg is dispatched when the user activates the Tree menu item.
+type openTreeMsg struct{}
 
 // manipulateOp identifies which file-manipulation operation the user is
 // asking for. Each one is gated by the confirmation dialog before any
@@ -100,6 +104,9 @@ type Model struct {
 	help     helppage.Page
 	helpOpen bool
 
+	tree     treeview.Page
+	treeOpen bool
+
 	confirmDlg     confirmdialog.Dialog
 	confirmDlgOpen bool
 	pendingOp      manipulateOp
@@ -153,6 +160,11 @@ func New(cwd string) Model {
 				{Label: "Cut", Key: 'x', Msg: manipulateMsg{op: manipulateCut}},
 				{Label: "Paste", Key: 'v', Msg: manipulateMsg{op: manipulatePaste}},
 			},
+		},
+		{
+			Label:  "Tree",
+			Hotkey: "alt+t",
+			Msg:    openTreeMsg{},
 		},
 		{
 			Label:  "Help",
@@ -220,6 +232,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.helpOpen {
 		return m.updateHelp(msg)
 	}
+	if m.treeOpen {
+		return m.updateTree(msg)
+	}
 	if m.confirmDlgOpen {
 		return m.updateConfirmDialog(msg)
 	}
@@ -268,6 +283,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case openHelpMsg:
 		m.help = helppage.New()
 		m.helpOpen = true
+		return m, nil
+
+	case openTreeMsg:
+		m.tree = treeview.New(m.filetree.CWD(), m.width, m.height-menuBarHeight)
+		m.treeOpen = true
 		return m, nil
 
 	case manipulateMsg:
@@ -548,6 +568,41 @@ func (m Model) updateCreateBmark(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// updateTree routes events to the open tree view. The view emits
+// filetree.OpenFileMsg when a file row is activated; that's caught here so
+// the configured opener still applies.
+func (m Model) updateTree(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = ws.Width
+		m.height = ws.Height
+		m.menu.Width = ws.Width
+		ft, _ := m.filetree.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.filetree = ft
+		t, cmd := m.tree.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.tree = t
+		return m, cmd
+	}
+
+	if fm, ok := msg.(filetree.OpenFileMsg); ok {
+		m.openFile(fm.Path)
+		return m, nil
+	}
+
+	t, cmd := m.tree.Update(msg)
+	if t.IsClosed() {
+		m.treeOpen = false
+	} else {
+		m.tree = t
+	}
+	return m, cmd
+}
+
 // updateHelp routes events to the open help page. Any key press or click
 // closes it.
 func (m Model) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -775,6 +830,8 @@ func (m Model) View() tea.View {
 		body = m.confirmDlg.Render(m.width, m.height-menuBarHeight)
 	case m.helpOpen:
 		body = m.help.Render(m.width, m.height-menuBarHeight)
+	case m.treeOpen:
+		body = m.tree.Render()
 	default:
 		body = m.filetree.Render()
 	}
