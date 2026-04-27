@@ -27,6 +27,20 @@ import (
 // menuBarHeight is the number of terminal lines the menu bar occupies.
 const menuBarHeight = 1
 
+// translateOverlayClick adjusts a tea.MouseClickMsg's Y so that the row
+// directly under the menu bar maps to Y=0 in the overlay's coordinate space.
+// Other message types pass through unchanged. The main-screen branch in
+// Update handles this same adjustment inline; overlay routers call this
+// helper so row hit-testing in the bookmarks page, search views, and tree
+// view doesn't drift by the height of the menu bar.
+func translateOverlayClick(msg tea.Msg) tea.Msg {
+	if click, ok := msg.(tea.MouseClickMsg); ok {
+		click.Y -= menuBarHeight
+		return click
+	}
+	return msg
+}
+
 // openOpenersMsg is dispatched when the user activates the Openers menu item.
 type openOpenersMsg struct{}
 
@@ -450,7 +464,7 @@ func (m Model) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	sm, cmd := m.srch.Update(msg)
+	sm, cmd := m.srch.Update(translateOverlayClick(msg))
 	m.srch = sm
 	if sm.IsClosed() {
 		m.searchOpen = false
@@ -482,7 +496,7 @@ func (m Model) updateContentSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	cs, cmd := m.csrch.Update(msg)
+	cs, cmd := m.csrch.Update(translateOverlayClick(msg))
 	m.csrch = cs
 	if cs.IsClosed() {
 		m.csrchOpen = false
@@ -537,7 +551,7 @@ func (m Model) updateBookmarks(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	p, cmd := m.bmarksPage.Update(msg)
+	p, cmd := m.bmarksPage.Update(translateOverlayClick(msg))
 	if p.IsClosed() {
 		m.bmarksOpen = false
 		m.bookmarkList = p.Bookmarks()
@@ -605,7 +619,7 @@ func (m Model) updateTree(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	t, cmd := m.tree.Update(msg)
+	t, cmd := m.tree.Update(translateOverlayClick(msg))
 	if t.IsClosed() {
 		m.treeOpen = false
 	} else {

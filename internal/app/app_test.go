@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/bjcarnes/splorer/internal/bookmarks"
 	"github.com/bjcarnes/splorer/internal/filetree"
 	"github.com/bjcarnes/splorer/internal/menubar"
 )
@@ -444,6 +445,54 @@ func TestCtrlC_StartsCopy(t *testing.T) {
 	if !m.confirmDlgOpen || m.pendingOp != manipulateCopy {
 		t.Errorf("Ctrl+C should start copy; confirmOpen=%v pendingOp=%v",
 			m.confirmDlgOpen, m.pendingOp)
+	}
+}
+
+// ── Overlay click translation (regression) ──────────────────────────────────
+
+// Clicking on the first bookmark row must select that bookmark, not the row
+// below it. The bug was that updateBookmarks forwarded the raw screen Y to
+// the page, but the page's own header height is measured from below the
+// menu bar — so clicks landed one row too low.
+func TestBookmarks_ClickSelectsClickedRow(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	m := newModelIn(t, t.TempDir())
+	m.bookmarkList = []bookmarks.Bookmark{
+		{Name: "First", Path: dir1},
+		{Name: "Second", Path: dir2},
+	}
+
+	tm, _ := m.Update(openBookmarksMsg{})
+	m = asModel(t, tm)
+	if !m.bmarksOpen {
+		t.Fatal("bookmarks page did not open")
+	}
+	tm, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = asModel(t, tm)
+
+	// Screen layout under the bookmarks page:
+	//   Y=0  menu bar
+	//   Y=1  " Bookmarks" title
+	//   Y=2  separator
+	//   Y=3  first bookmark   ← we click here
+	//   Y=4  second bookmark
+	click := tea.MouseClickMsg{X: 0, Y: 3, Button: tea.MouseLeft}
+	tm, _ = m.Update(click)
+	m = asModel(t, tm)
+	// Second click in <500ms triggers a double-click → activate.
+	tm, cmd := m.Update(click)
+	m = asModel(t, tm)
+	if cmd == nil {
+		t.Fatal("double-click should produce an activation cmd")
+	}
+	nd, ok := cmd().(bookmarks.NavigateDirMsg)
+	if !ok {
+		t.Fatalf("expected NavigateDirMsg, got %T", cmd())
+	}
+	if nd.Path != dir1 {
+		t.Errorf("activated bookmark path = %q, want first bookmark %q (clicking row 0 picked the wrong row)", nd.Path, dir1)
 	}
 }
 
