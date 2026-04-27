@@ -447,6 +447,162 @@ func TestCtrlC_StartsCopy(t *testing.T) {
 	}
 }
 
+// ── Rename ──────────────────────────────────────────────────────────────────
+
+func TestRename_ConfirmDialogOpensWithSingleEntry(t *testing.T) {
+	root := t.TempDir()
+	makeFile(t, root, "a.txt", "x")
+	m := newModelIn(t, root)
+
+	tm, _ := m.Update(manipulateMsg{op: manipulateRename})
+	m = asModel(t, tm)
+	if !m.renameDlgOpen {
+		t.Fatal("rename should open the rename dialog with one entry selected")
+	}
+	if m.confirmDlgOpen {
+		t.Error("rename must not open the generic confirm dialog")
+	}
+	if m.pendingOp != manipulateRename {
+		t.Errorf("pendingOp = %v, want manipulateRename", m.pendingOp)
+	}
+	if len(m.pendingPaths) != 1 {
+		t.Errorf("pendingPaths = %v, want one entry", m.pendingPaths)
+	}
+}
+
+func TestRename_RenamesFileOnSave(t *testing.T) {
+	root := t.TempDir()
+	src := makeFile(t, root, "a.txt", "alpha")
+	m := newModelIn(t, root)
+
+	tm, _ := m.Update(manipulateMsg{op: manipulateRename})
+	m = asModel(t, tm)
+	if !m.renameDlgOpen {
+		t.Fatal("rename dialog did not open")
+	}
+
+	// Backspace the prepopulated "a.txt" then type "b.txt".
+	for i := 0; i < len("a.txt"); i++ {
+		tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+		m = asModel(t, tm)
+	}
+	for _, ch := range "b.txt" {
+		tm, _ = m.Update(tea.KeyPressMsg{Code: ch, Text: string(ch)})
+		m = asModel(t, tm)
+	}
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, tm)
+
+	if m.renameDlgOpen {
+		t.Error("rename dialog should be closed after Enter on a changed name")
+	}
+	if m.pendingOp != manipulateNone {
+		t.Errorf("pendingOp should reset; got %v", m.pendingOp)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("a.txt should be gone, stat err = %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "b.txt")); err != nil || string(got) != "alpha" {
+		t.Errorf("b.txt content = %q, %v", got, err)
+	}
+}
+
+func TestRename_EscLeavesFileAlone(t *testing.T) {
+	root := t.TempDir()
+	src := makeFile(t, root, "a.txt", "alpha")
+	m := newModelIn(t, root)
+
+	tm, _ := m.Update(manipulateMsg{op: manipulateRename})
+	m = asModel(t, tm)
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = asModel(t, tm)
+
+	if m.renameDlgOpen {
+		t.Error("Esc should close the rename dialog")
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("a.txt should still exist after cancel: %v", err)
+	}
+}
+
+func TestRename_MultiSelectionDoesNothing(t *testing.T) {
+	root := t.TempDir()
+	makeFile(t, root, "a.txt", "x")
+	makeFile(t, root, "b.txt", "y")
+	m := newModelIn(t, root)
+
+	// Select row 0 with Space, move down, select row 1 with Space.
+	tm, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	m = asModel(t, tm)
+	tm, _ = m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	m = asModel(t, tm)
+	tm, _ = m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	m = asModel(t, tm)
+	if got := len(m.filetree.SelectionPaths()); got != 2 {
+		t.Fatalf("expected 2 selected, got %d", got)
+	}
+
+	tm, _ = m.Update(manipulateMsg{op: manipulateRename})
+	m = asModel(t, tm)
+	if m.renameDlgOpen {
+		t.Error("rename should be a no-op with 2+ entries selected")
+	}
+	if m.pendingOp != manipulateNone {
+		t.Errorf("pendingOp = %v, want manipulateNone", m.pendingOp)
+	}
+}
+
+func TestRename_EmptyDirDoesNothing(t *testing.T) {
+	root := t.TempDir()
+	m := newModelIn(t, root)
+	tm, _ := m.Update(manipulateMsg{op: manipulateRename})
+	m = asModel(t, tm)
+	if m.renameDlgOpen {
+		t.Error("rename should be a no-op in an empty directory")
+	}
+}
+
+func TestRename_CollisionSurfacesError(t *testing.T) {
+	root := t.TempDir()
+	src := makeFile(t, root, "a.txt", "x")
+	makeFile(t, root, "b.txt", "existing")
+	m := newModelIn(t, root)
+
+	tm, _ := m.Update(manipulateMsg{op: manipulateRename})
+	m = asModel(t, tm)
+
+	// Replace "a.txt" with "b.txt".
+	for i := 0; i < len("a.txt"); i++ {
+		tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+		m = asModel(t, tm)
+	}
+	for _, ch := range "b.txt" {
+		tm, _ = m.Update(tea.KeyPressMsg{Code: ch, Text: string(ch)})
+		m = asModel(t, tm)
+	}
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, tm)
+
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("a.txt should still exist after refused rename: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "b.txt")); err != nil || string(got) != "existing" {
+		t.Errorf("b.txt should be untouched: %q, %v", got, err)
+	}
+}
+
+func TestF2_StartsRename(t *testing.T) {
+	root := t.TempDir()
+	makeFile(t, root, "a.txt", "x")
+	m := newModelIn(t, root)
+	tm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF2})
+	m = asModel(t, tm)
+	if !m.renameDlgOpen || m.pendingOp != manipulateRename {
+		t.Errorf("F2 should start a rename op; renameOpen=%v pendingOp=%v",
+			m.renameDlgOpen, m.pendingOp)
+	}
+}
+
 func TestAltT_OpensTreeView(t *testing.T) {
 	m := newModel(t)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModAlt})

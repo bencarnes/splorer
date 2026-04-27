@@ -128,6 +128,89 @@ func TestMoveAll_RenamesFiles(t *testing.T) {
 	}
 }
 
+func TestRename_File(t *testing.T) {
+	root := t.TempDir()
+	src := makeFile(t, root, "old.txt", "alpha")
+
+	if err := Rename(src, "new.txt"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("old name should be gone, stat err = %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "new.txt")); err != nil || string(got) != "alpha" {
+		t.Errorf("new file = %q, %v", got, err)
+	}
+}
+
+func TestRename_Directory(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "old")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0755); err != nil {
+		t.Fatalf("mkdirall: %v", err)
+	}
+	makeFile(t, src, "x.txt", "hi")
+
+	if err := Rename(src, "new"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("old dir should be gone, stat err = %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "new", "x.txt")); err != nil || string(got) != "hi" {
+		t.Errorf("renamed dir contents = %q, %v", got, err)
+	}
+}
+
+func TestRename_RefusesCollision(t *testing.T) {
+	root := t.TempDir()
+	src := makeFile(t, root, "a.txt", "x")
+	makeFile(t, root, "b.txt", "existing")
+
+	if err := Rename(src, "b.txt"); err == nil {
+		t.Errorf("expected error when renaming onto an existing entry")
+	}
+	// Source should still exist; existing target must not be clobbered.
+	if got, err := os.ReadFile(src); err != nil || string(got) != "x" {
+		t.Errorf("source changed after refused rename: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "b.txt")); err != nil || string(got) != "existing" {
+		t.Errorf("existing target changed: %q, %v", got, err)
+	}
+}
+
+func TestRename_RefusesSameName(t *testing.T) {
+	root := t.TempDir()
+	src := makeFile(t, root, "a.txt", "x")
+	if err := Rename(src, "a.txt"); err == nil {
+		t.Errorf("expected error when renaming to the same name")
+	}
+}
+
+func TestRename_RejectsPathSeparator(t *testing.T) {
+	root := t.TempDir()
+	src := makeFile(t, root, "a.txt", "x")
+	if err := Rename(src, "sub/b.txt"); err == nil {
+		t.Errorf("expected error when newName contains '/'")
+	}
+	if err := Rename(src, `sub\b.txt`); err == nil {
+		t.Errorf("expected error when newName contains backslash")
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("source missing after rejected rename: %v", err)
+	}
+}
+
+func TestRename_RejectsEmptyAndDotNames(t *testing.T) {
+	root := t.TempDir()
+	src := makeFile(t, root, "a.txt", "x")
+	for _, bad := range []string{"", ".", ".."} {
+		if err := Rename(src, bad); err == nil {
+			t.Errorf("Rename(%q) should fail", bad)
+		}
+	}
+}
+
 func TestMoveAll_RefusesCollision(t *testing.T) {
 	root := t.TempDir()
 	dest := filepath.Join(root, "dst")

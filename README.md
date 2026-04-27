@@ -19,8 +19,9 @@ for configuring which program opens files of a given extension (overriding the
 system default — `xdg-open` on Linux, `start` on Windows), a **Bookmarks** menu
 for saving and navigating to frequently-used files and directories, a
 **Sort** menu for changing the order in which directory entries are listed,
-a **Manipulate** menu for deleting, copying, cutting, and pasting files or
-directories (with multi-selection via mouse), a **Tree** menu that opens a
+a **Manipulate** menu for deleting, copying, cutting, pasting, and renaming
+files or directories (with multi-selection via mouse), a **Tree** menu that
+opens a
 read-only recursive tree of the current directory, and a **Help** menu that
 documents how multi-selection works (the only set of bindings in the app
 that isn't immediately self-evident).
@@ -49,6 +50,7 @@ that isn't immediately self-evident).
 | `Ctrl+C` | Copy the selection to the clipboard (with confirmation) |
 | `Ctrl+X` | Cut the selection to the clipboard (with confirmation) |
 | `Ctrl+V` | Paste the clipboard into the current directory (with confirmation) |
+| `F2` | Rename the selected entry (only when a single file or directory is selected) |
 | `q` / `Esc` | Quit |
 
 **Menu bar**
@@ -225,14 +227,21 @@ anywhere) to close.
 | `c` | Activate **Copy** |
 | `x` | Activate **Cut** |
 | `v` | Activate **Paste** |
+| `r` | Activate **Rename** (only when a single entry is selected) |
 | `Enter` / `→` / `l` | Activate the highlighted option |
 | Single click on an option | Activate it |
 | `Esc` | Close the dropdown |
 
-Each option opens a confirmation dialog that summarises the action; the
-filesystem change only happens after pressing **OK** (or `y`). The same
+Delete / Copy / Cut / Paste each open a confirmation dialog that summarises
+the action; the filesystem change only happens after pressing **OK** (or
+`y`). Rename opens a small text-input dialog instead — see below. The same
 operations can be triggered directly from the file tree without opening the
-menu using `Delete`, `Ctrl+C`, `Ctrl+X`, and `Ctrl+V`.
+menu using `Delete`, `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, and `F2`.
+
+Rename is only triggerable when exactly one file or directory is selected
+(either the cursor's row, or a single multi-selected entry). If a
+multi-selection of two or more is active, activating Rename — from the menu,
+sub-item hotkey, or `F2` — is a no-op.
 
 **Confirmation dialog** (gates every Manipulate operation)
 
@@ -247,6 +256,22 @@ menu using `Delete`, `Ctrl+C`, `Ctrl+X`, and `Ctrl+V`.
 
 The dialog defaults the focus to **Cancel** so an accidental `Enter` does not
 delete or overwrite anything.
+
+**Rename dialog** (opened from Manipulate → Rename or `F2`)
+
+| Input | Action |
+|---|---|
+| Typing | Edit the new name (input is pre-populated with the current basename) |
+| `←` / `→` | Move cursor within the name field |
+| `Backspace` | Delete the rune before the cursor |
+| `Ctrl+A` / `Ctrl+E` | Jump to start / end of the field |
+| `Enter` | Apply the rename (only if the name is non-empty and differs from the current basename) |
+| `Esc` | Cancel without renaming |
+
+The rename happens inside the entry's parent directory — the new name is
+treated as a basename, so embedded `/` or `\` are rejected with an error in
+the file tree's status bar. If the destination name already exists in the
+directory, the rename aborts without overwriting.
 
 ### Manipulate
 
@@ -479,8 +504,15 @@ splorer/
     │   ├── fileops.go            Filesystem primitives behind Manipulate:
     │   │                         DeleteAll (RemoveAll), CopyAll (recursive copy
     │   │                         with collision check), MoveAll (rename, falling
-    │   │                         back to copy + remove across devices).
+    │   │                         back to copy + remove across devices), Rename
+    │   │                         (in-place rename within the parent directory).
     │   └── fileops_test.go
+    ├── renamedialog/
+    │   ├── dialog.go             Modal text-input dialog for the Manipulate →
+    │   │                         Rename operation. Pre-populates with the entry's
+    │   │                         basename; reports IsSaved + NewName when the
+    │   │                         user confirms with a changed, non-empty name.
+    │   └── dialog_test.go
     ├── filetree/
     │   ├── item.go               FileEntry struct and humanizeSize helper.
     │   ├── item_test.go
@@ -675,6 +707,18 @@ splorer/
   leaves it loaded for repeated pasting. Errors are surfaced via
   `filetree.SetError` and clear on the next keypress, matching how
   navigation errors are handled.
+
+- **Rename is gated by an input dialog and requires a single selection.**  
+  Rename can't reuse `confirmdialog` because it needs the user to type a new
+  name, so `app.startManipulate(manipulateRename)` opens a dedicated
+  `renamedialog.Dialog` instead. The op is rejected silently when zero or
+  more than one entries are selected — the menu / sub-item hotkey / `F2`
+  shortcut all funnel through the same gate, so there's exactly one place
+  where the single-entry rule lives. The dialog pre-populates with the
+  current basename and refuses to save if the trimmed input is empty or
+  unchanged. On save, `fileops.Rename` performs an in-place `os.Rename`
+  inside the parent directory; embedded path separators in the new name are
+  rejected and surface as errors in the file tree's status bar.
 
 - **Multi-selection is mouse-only and tracked by path.**  
   `filetree.Model` keeps a `selected map[string]bool` keyed by absolute path

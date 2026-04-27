@@ -18,6 +18,7 @@ import (
 	"github.com/bjcarnes/splorer/internal/helppage"
 	"github.com/bjcarnes/splorer/internal/menubar"
 	"github.com/bjcarnes/splorer/internal/opener"
+	"github.com/bjcarnes/splorer/internal/renamedialog"
 	"github.com/bjcarnes/splorer/internal/search"
 	"github.com/bjcarnes/splorer/internal/sortdialog"
 	"github.com/bjcarnes/splorer/internal/treeview"
@@ -59,6 +60,7 @@ const (
 	manipulateCopy
 	manipulateCut
 	manipulatePaste
+	manipulateRename
 )
 
 // clipboardMode is the kind of pending paste held in the in-memory clipboard.
@@ -112,6 +114,9 @@ type Model struct {
 	pendingOp      manipulateOp
 	pendingPaths   []string
 
+	renameDlg     renamedialog.Dialog
+	renameDlgOpen bool
+
 	clipboard     []string
 	clipboardMode clipboardMode
 
@@ -159,6 +164,7 @@ func New(cwd string) Model {
 				{Label: "Copy", Key: 'c', Msg: manipulateMsg{op: manipulateCopy}},
 				{Label: "Cut", Key: 'x', Msg: manipulateMsg{op: manipulateCut}},
 				{Label: "Paste", Key: 'v', Msg: manipulateMsg{op: manipulatePaste}},
+				{Label: "Rename", Key: 'r', Msg: manipulateMsg{op: manipulateRename}},
 			},
 		},
 		{
@@ -237,6 +243,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.confirmDlgOpen {
 		return m.updateConfirmDialog(msg)
+	}
+	if m.renameDlgOpen {
+		return m.updateRenameDialog(msg)
 	}
 
 	switch msg := msg.(type) {
@@ -369,6 +378,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.startManipulate(manipulateCut), nil
 		case "ctrl+v":
 			return m.startManipulate(manipulatePaste), nil
+		case "f2":
+			return m.startManipulate(manipulateRename), nil
 		}
 		if cmd := m.menu.HandleKey(msg); cmd != nil {
 			return m, cmd
@@ -627,11 +638,13 @@ func (m Model) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// startManipulate captures the targets for op and opens the confirmation
-// dialog. Paste targets the clipboard (and aborts if it's empty); the others
-// target the filetree's current multi-selection (or the cursor's row if no
-// multi-selection exists). For all four ops, no filesystem change happens
-// here — execution is deferred until updateConfirmDialog sees the OK press.
+// startManipulate captures the targets for op and opens the appropriate
+// gating overlay. Paste targets the clipboard (and aborts if it's empty);
+// rename requires a single selected entry and opens a text-input dialog;
+// the other ops target the filetree's current multi-selection (or the
+// cursor's row if no multi-selection exists) and open the generic
+// confirmation dialog. No filesystem change happens here — execution is
+// deferred until the gating overlay returns OK.
 func (m Model) startManipulate(op manipulateOp) Model {
 	var targets []string
 	if op == manipulatePaste {
@@ -646,11 +659,59 @@ func (m Model) startManipulate(op manipulateOp) Model {
 		}
 	}
 
+	if op == manipulateRename {
+		// Rename only makes sense for exactly one entry. A multi-selection
+		// of two or more is rejected silently — the menu/key shortcut is a
+		// no-op rather than degrading to "rename the first one".
+		if len(targets) != 1 {
+			return m
+		}
+		m.pendingOp = op
+		m.pendingPaths = targets
+		m.renameDlg = renamedialog.New(targets[0])
+		m.renameDlgOpen = true
+		return m
+	}
+
 	m.pendingOp = op
 	m.pendingPaths = targets
 	m.confirmDlg = confirmdialog.New(opTitle(op), opSummary(op, targets, m.filetree.CWD()))
 	m.confirmDlgOpen = true
 	return m
+}
+
+// updateRenameDialog routes events to the open rename dialog. On save the
+// rename is executed via fileops.Rename; errors surface in the file tree's
+// status bar, matching how the other manipulate ops report failures.
+func (m Model) updateRenameDialog(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = ws.Width
+		m.height = ws.Height
+		m.menu.Width = ws.Width
+		ft, _ := m.filetree.Update(tea.WindowSizeMsg{
+			Width:  ws.Width,
+			Height: ws.Height - menuBarHeight,
+		})
+		m.filetree = ft
+		return m, nil
+	}
+
+	d, cmd := m.renameDlg.Update(msg)
+	if !d.IsClosed() {
+		m.renameDlg = d
+		return m, cmd
+	}
+
+	m.renameDlgOpen = false
+	if d.IsSaved() && len(m.pendingPaths) == 1 {
+		if err := fileops.Rename(m.pendingPaths[0], d.NewName()); err != nil {
+			m.filetree = m.filetree.SetError(err.Error())
+		}
+		m.filetree = m.filetree.ClearSelection()
+	}
+	m.pendingOp = manipulateNone
+	m.pendingPaths = nil
+	return m, cmd
 }
 
 // updateConfirmDialog routes events to the open confirmation dialog. On OK,
@@ -828,6 +889,8 @@ func (m Model) View() tea.View {
 		body = m.sortDlg.Render(m.width, m.height-menuBarHeight)
 	case m.confirmDlgOpen:
 		body = m.confirmDlg.Render(m.width, m.height-menuBarHeight)
+	case m.renameDlgOpen:
+		body = m.renameDlg.Render(m.width, m.height-menuBarHeight)
 	case m.helpOpen:
 		body = m.help.Render(m.width, m.height-menuBarHeight)
 	case m.treeOpen:

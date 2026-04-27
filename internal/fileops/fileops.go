@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // DeleteAll removes every path in paths recursively. Returns the first error
@@ -61,6 +62,30 @@ func MoveAll(sources []string, destDir string) error {
 		if err := os.RemoveAll(src); err != nil {
 			return fmt.Errorf("move %s: copied but cannot remove source: %w", src, err)
 		}
+	}
+	return nil
+}
+
+// Rename renames the entry at src to newName within its parent directory.
+// newName is treated as a basename: any path separator (or the special "."
+// / ".." names) is rejected so the call cannot turn into a cross-directory
+// move. As with CopyAll/MoveAll, an existing destination aborts the operation.
+func Rename(src, newName string) error {
+	if newName == "" {
+		return fmt.Errorf("new name cannot be empty")
+	}
+	if strings.ContainsRune(newName, '/') || strings.ContainsRune(newName, '\\') {
+		return fmt.Errorf("new name cannot contain a path separator: %q", newName)
+	}
+	if newName == "." || newName == ".." {
+		return fmt.Errorf("invalid new name: %q", newName)
+	}
+	dst := filepath.Join(filepath.Dir(src), newName)
+	if err := guardCollision(src, dst); err != nil {
+		return err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return fmt.Errorf("rename %s: %w", src, err)
 	}
 	return nil
 }
