@@ -2,6 +2,8 @@
 
 A keyboard- and mouse-driven terminal file explorer built in Go.
 
+![Terminal Screenshot](TerminalScreenshot.png)
+
 ## What it does
 
 splorer opens in your current working directory and displays a scrollable list
