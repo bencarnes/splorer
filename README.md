@@ -25,8 +25,11 @@ a **Manipulate** menu for deleting, copying, cutting, pasting, and renaming
 files or directories (with multi-selection via mouse), a **Tree** menu that
 opens a
 read-only recursive tree of the current directory, and a **Help** menu that
-documents how multi-selection works (the only set of bindings in the app
-that isn't immediately self-evident).
+documents typeahead and multi-selection (the only bindings in the app that
+aren't immediately self-evident).
+
+In the file tree, typing the name of a file or folder jumps the cursor to it,
+the way it does in Windows Explorer — see [Typeahead](#typeahead).
 
 ### Controls
 
@@ -34,12 +37,14 @@ that isn't immediately self-evident).
 
 | Input | Action |
 |---|---|
-| `↑` / `k` | Move cursor up |
-| `↓` / `j` | Move cursor down |
+| Typing a name | Jump to the first entry starting with what you typed — see [Typeahead](#typeahead) |
+| `↑` | Move cursor up |
+| `↓` | Move cursor down |
 | `PgUp` / `PgDn` | Scroll one page |
-| `Enter` / `→` / `l` | Open file or enter directory |
-| `Backspace` / `←` / `h` | Go up to parent directory |
-| `~` | Jump to home directory |
+| `Home` / `End` | Jump to the first / last entry |
+| `Enter` / `→` | Open file or enter directory |
+| `Backspace` / `←` | Go up to parent directory |
+| `Alt`+`Home` | Jump to home directory |
 | Single click | Move cursor and reset multi-selection to that row |
 | `Shift`+click | Extend multi-selection from the anchor (last single-click) to the clicked row (terminal-dependent — see note below) |
 | `Ctrl`+click | Toggle the clicked row in/out of the multi-selection (terminal-dependent — see note below) |
@@ -53,7 +58,47 @@ that isn't immediately self-evident).
 | `Ctrl+X` | Cut the selection to the clipboard (with confirmation) |
 | `Ctrl+V` | Paste the clipboard into the current directory (with confirmation) |
 | `F2` | Rename the selected entry (only when a single file or directory is selected) |
-| `q` / `Esc` | Quit |
+| `Esc` | Cancel the typeahead prefix if one is in flight, otherwise quit |
+
+#### Typeahead
+
+Start typing a name and the cursor jumps to it, the way it does in Windows
+Explorer. Matching is case-insensitive and on the start of the name, so `ban`
+lands on `Banana.md`; directories and files are both matched. The prefix you
+have typed so far is shown in the bottom-left corner (`jump: ban`) so it's
+clear why the cursor moved and what the next keystroke will extend.
+
+| Input | Action |
+|---|---|
+| Any printable character | Extend the prefix and jump to the first entry that starts with it |
+| The same character again | Cycle to the next entry starting with that character (wrapping at the end of the list) |
+| `Esc` | Cancel the prefix (a second `Esc`, with no prefix in flight, quits) |
+| Any other key | Ends the prefix and does its usual job |
+
+The prefix expires **one second** after the last keystroke, so pausing and then
+typing starts a fresh jump rather than extending the old one. A keystroke that
+matches nothing is ignored — the cursor and the prefix both stay where they
+are, so a typo can't strand you.
+
+The search starts just below the cursor and wraps around the end of the list,
+which is what makes repeating a character step through every entry beginning
+with it. Jumping to an entry clears the multi-selection, exactly as a plain
+click does: the row you land on is what `Delete` / `Ctrl+C` / `Ctrl+X` / `F2`
+will act on.
+
+Because every printable character has to stay available for typing a name,
+the file tree has no single-letter bindings — no `j`/`k`/`h`/`l`, no `q` to
+quit, no `~` for the home directory. Navigation is on the arrow keys, `PgUp` /
+`PgDn`, and `Home` / `End`; `Esc` quits; the home directory moved to `Alt`+`Home`.
+`Space` is the one exception: with no prefix in flight it still toggles the
+cursor's row in and out of the multi-selection, but mid-prefix it types a
+space, so names containing spaces are reachable. This applies to the file tree
+only — the search-result lists, dropdowns, tree view, and dialogs have no
+typeahead and keep their `j`/`k`/`h`/`l` bindings.
+
+Typeahead is a *jump*, not a filter — the listing never changes. To narrow the
+list, or to match anywhere in a name rather than at the start, use **Find → By
+Name** (`Ctrl+F`) instead.
 
 **Menu bar**
 
@@ -489,10 +534,10 @@ splorer/
     │   │                         Cancel; supports y/n, Esc, arrow navigation.
     │   └── dialog_test.go
     ├── helppage/
-    │   └── helppage.go           Full-screen Help overlay. Currently scoped to
-    │                             multi-selection (mouse + keyboard fallbacks)
-    │                             since other bindings are self-evident. Any
-    │                             key or click closes it.
+    │   └── helppage.go           Full-screen Help overlay. Scoped to typeahead
+    │                             and multi-selection (mouse + keyboard
+    │                             fallbacks) since other bindings are
+    │                             self-evident. Any key or click closes it.
     ├── treeview/
     │   ├── treeview.go           Read-only recursive tree view of a directory.
     │   │                         Walks dirs-first/files-second per level, caps
@@ -525,6 +570,11 @@ splorer/
     │   │                         Exposes SelectionPaths/ClearSelection/SetError
     │   │                         for the Manipulate flow in app.
     │   ├── model_test.go
+    │   ├── typeahead.go          Type-a-name-to-jump state: the prefix buffer and
+    │   │                         its one-second timeout, the wrap-around prefix
+    │   │                         match, and the rule for which keystrokes count
+    │   │                         as text rather than bindings.
+    │   ├── typeahead_test.go
     │   └── sort.go               SortOrder type, Label(), AllSortOrders, sortGroup().
     │                             Dirs always precede files; order within each group
     │                             is controlled by the active SortOrder.
@@ -722,6 +772,24 @@ splorer/
   inside the parent directory; embedded path separators in the new name are
   rejected and surface as errors in the file tree's status bar.
 
+- **Typeahead owns every printable key in the file tree.**  
+  A name can start with any character, so the file tree can't reserve letters
+  for bindings and still let you type `q` or `j` as the first character of a
+  filename. `filetree.Update` therefore checks `tea.KeyPressMsg.Text` before
+  the binding switch: a keystroke that carries text and no Ctrl/Alt-class
+  modifier is typeahead, and everything else falls through to the switch (and
+  ends the typeahead session on the way). That's why navigation lives on the
+  arrow / `PgUp` / `PgDn` / `Home` / `End` keys, why `Esc` is the quit key, and
+  why the home directory moved from `~` to `Alt`+`Home`. `Space` is the single
+  compromise — it keeps its multi-selection toggle while no prefix is in
+  flight, because losing it would cost the only always-available keyboard
+  fallback for multi-select. The prefix state (buffer + timestamp) lives in
+  `filetree.typeahead`; expiry is decided by the clock every time it's read,
+  so the `tea.Tick` that follows a keystroke is only a repaint prompt and can
+  be dropped without affecting correctness. `app.Update` consults
+  `filetree.TypeaheadActive()` before treating `Esc` as quit, so cancelling an
+  abandoned prefix never costs you the session.
+
 - **Multi-selection is mouse-only and tracked by path.**  
   `filetree.Model` keeps a `selected map[string]bool` keyed by absolute path
   so the watcher's directory refresh can prune entries that disappear
@@ -750,7 +818,9 @@ needed.
 **New key bindings** in the file tree: add a case to the `tea.KeyPressMsg`
 switch in `filetree/model.go:Update`. If the binding should be interceptable by
 the menu bar (e.g. a global shortcut), add it to `app.Update` instead, before
-the `m.filetree.Update(msg)` call.
+the `m.filetree.Update(msg)` call. Note that unmodified printable characters
+never reach either switch — they belong to typeahead — so a new file-tree
+binding has to be a special key (`F5`, `Home`, …) or a Ctrl/Alt chord.
 
 **Layout changes** (e.g. a preview pane): update `filetree.Render()` and adjust
 `headerHeight` / `footerHeight` if the number of fixed rows changes, since those
