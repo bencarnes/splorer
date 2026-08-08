@@ -44,6 +44,11 @@ type Model struct {
 	// extends the selection from the anchor to the clicked row inclusive. An
 	// empty string means there is no anchor (e.g. after a directory change).
 	anchorPath string
+
+	// typeahead is the name prefix typed so far. Any printable keystroke
+	// extends it and jumps the cursor to the first matching entry; it expires
+	// a second after the last keystroke. See typeahead.go.
+	typeahead typeahead
 }
 
 // New creates a Model starting in cwd with sensible defaults.
@@ -143,6 +148,7 @@ func (m Model) navigateTo(path string) (Model, error) {
 	m.err = ""
 	m.selected = nil
 	m.anchorPath = ""
+	m.typeahead = typeahead{}
 	return m, nil
 }
 
@@ -292,15 +298,32 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		m.err = "" // clear stale errors on any keypress
+
+		// Printable keystrokes are name typeahead, not bindings: every
+		// letter has to stay available for jumping to a file, so navigation
+		// lives on the arrow/Home/End/PgUp/PgDn keys only. The one exception
+		// is Space with no prefix in flight, which keeps its multi-selection
+		// meaning and falls through to the switch below; mid-prefix it is
+		// just another character, so names containing spaces are reachable.
+		if txt, ok := typeaheadText(msg); ok && !(txt == " " && !m.typeahead.active()) {
+			return m.typeaheadPress(txt), typeaheadTickCmd()
+		}
+		// Any other key ends the typeahead session.
+		m = m.clearTypeahead()
+
 		switch msg.String() {
-		case "up", "k":
+		case "up":
 			m = m.moveCursor(-1)
-		case "down", "j":
+		case "down":
 			m = m.moveCursor(1)
 		case "pgup":
 			m = m.moveCursor(-m.listHeight())
 		case "pgdown":
 			m = m.moveCursor(m.listHeight())
+		case "home":
+			m = m.moveCursor(-len(m.entries))
+		case "end":
+			m = m.moveCursor(len(m.entries))
 		// Keyboard fallbacks for multi-selection — most terminals swallow
 		// Shift+click for their own text selection, so these provide a
 		// reliable way to build a multi-selection without the mouse.
@@ -314,11 +337,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m = m.extendSelectionBy(m.listHeight())
 		case " ", "space":
 			m = m.toggleCursorSelection()
-		case "enter", "right", "l":
+		case "enter", "right":
 			return m.activate()
-		case "backspace", "left", "h":
+		case "backspace", "left":
 			return m.goUp()
-		case "~":
+		// The home directory used to be on "~", but printable keys belong to
+		// typeahead now. Alt+Home is the replacement: unambiguous to type on
+		// any layout, unlike a chord on "~" (already Shift+` for most people).
+		case "alt+home":
 			if home, err := os.UserHomeDir(); err == nil {
 				if newM, err2 := m.navigateTo(home); err2 == nil {
 					return newM, newM.WatchCmd()
@@ -326,8 +352,17 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 
+	case typeaheadTickMsg:
+		// Fires one timeout after a typeahead keystroke; its only job is to
+		// prompt the repaint that drops an expired prefix from the status bar.
+		if !m.typeahead.active() {
+			m = m.clearTypeahead()
+		}
+		return m, nil
+
 	case tea.MouseClickMsg:
 		if msg.Button == tea.MouseLeft {
+			m = m.clearTypeahead()
 			idx := int(msg.Y) - headerHeight + m.offset
 			now := time.Now()
 			isDouble := idx == m.lastClickY && now.Sub(m.lastClick) < 500*time.Millisecond
@@ -575,7 +610,12 @@ func (m Model) Render() string {
 	} else {
 		leftStr = lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf(" %d items", len(m.entries)))
 	}
-	rightStr := dimStyle.Render("q quit  ↑↓/jk navigate  enter open  ←/h go up  ~ home")
+	// Show the prefix typed so far, so it's obvious why the cursor jumped and
+	// what a further keystroke will extend.
+	if m.typeahead.active() {
+		leftStr += multiSelStyle.Render("  jump: " + m.typeahead.buf)
+	}
+	rightStr := dimStyle.Render("esc quit  ↑↓ move  enter open  ← up  home/end  type to jump")
 	footerGap := m.width - lipgloss.Width(leftStr) - lipgloss.Width(rightStr)
 	if footerGap < 1 {
 		footerGap = 1

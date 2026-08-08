@@ -71,11 +71,40 @@ func TestModel_CWD(t *testing.T) {
 	}
 }
 
-func TestMainScreen_QQuits(t *testing.T) {
+// Printable keys belong to name typeahead now, so q types instead of quitting
+// even on the main screen. Esc is the only way out.
+func TestMainScreen_QDoesNotQuit(t *testing.T) {
 	m := newModel(t)
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
-	if !isQuitCmd(cmd) {
-		t.Error("pressing q on the main screen should return tea.Quit")
+	if isQuitCmd(cmd) {
+		t.Error("q should type into the typeahead prefix, not quit")
+	}
+}
+
+// Esc cancels an in-flight typeahead prefix rather than quitting; a second Esc
+// (with no prefix left) quits.
+func TestMainScreen_EscCancelsTypeaheadBeforeQuitting(t *testing.T) {
+	root := t.TempDir()
+	makeFile(t, root, "quilt.txt", "x")
+	m := newModelIn(t, root)
+
+	tm, _ := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	m = asModel(t, tm)
+	if !m.filetree.TypeaheadActive() {
+		t.Fatal("typing q should start a typeahead prefix")
+	}
+
+	tm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = asModel(t, tm)
+	if isQuitCmd(cmd) {
+		t.Error("Esc should cancel the typeahead prefix, not quit")
+	}
+	if m.filetree.TypeaheadActive() {
+		t.Error("Esc should have cleared the typeahead prefix")
+	}
+
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc}); !isQuitCmd(cmd) {
+		t.Error("Esc with no prefix in flight should quit")
 	}
 }
 
@@ -583,7 +612,7 @@ func TestRename_MultiSelectionDoesNothing(t *testing.T) {
 	// Select row 0 with Space, move down, select row 1 with Space.
 	tm, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
 	m = asModel(t, tm)
-	tm, _ = m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	tm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = asModel(t, tm)
 	tm, _ = m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
 	m = asModel(t, tm)

@@ -361,12 +361,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyPressMsg:
-		// q and Esc quit the app, but only on the main screen — the overlay
+		// Esc quits the app, but only on the main screen — the overlay
 		// branches above return before we get here, so overlays keep their own
-		// Esc/typing semantics (e.g. Esc closes a dialog, "q" types into a
-		// search field).
-		switch msg.String() {
-		case "q", "esc":
+		// Esc semantics (e.g. Esc closes a dialog). While a typeahead prefix
+		// is in flight Esc cancels the prefix instead, so an abandoned jump
+		// never costs you the session; the filetree handles that below.
+		// Printable keys (including "q") are typeahead and are not
+		// intercepted here at all.
+		if msg.String() == "esc" && !m.filetree.TypeaheadActive() {
 			return m, tea.Quit
 		}
 		// Ctrl+F is a power-user shortcut straight to the name-search view,
